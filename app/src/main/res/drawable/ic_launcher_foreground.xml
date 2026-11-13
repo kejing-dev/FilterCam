@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Filter Cam launcher glyph (design appIcon): viewfinder corners and a shutter disc in #1B1F26, the date-stamp orange dot -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <path android:strokeColor="#FF1B1F26" android:strokeWidth="6" android:strokeLineCap="round" android:strokeLineJoin="round" android:fillColor="#00000000"
+        android:pathData="M30,42 V34 a4,4 0 0 1 4,-4 H42 M66,30 H74 a4,4 0 0 1 4,4 V42 M78,66 V74 a4,4 0 0 1 -4,4 H66 M42,78 H34 a4,4 0 0 1 -4,-4 V66" />
+    <path android:fillColor="#FF1B1F26" android:pathData="M54,54m-12,0a12,12 0,1 1,24 0a12,12 0,1 1,-24 0" />
+    <path android:fillColor="#FFFF7A1A" android:pathData="M71,71m-4.5,0a4.5,4.5 0,1 1,9 0a4.5,4.5 0,1 1,-9 0" />
+</vector>

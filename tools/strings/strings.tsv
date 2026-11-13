@@ -1,0 +1,152 @@
+app_name	Filter Cam	空间滤镜相机
+subtitle	Shoot your room on film	把房间拍成一张胶片
+tab_shoot	Camera	取景
+tab_filters	Filters	滤镜
+tab_gallery	Gallery	相册
+tab_settings	Settings	设置
+source	Source	来源
+src_camera	Camera	相机
+src_sample	Sample	示例
+src_import	My photo	我的照片
+open_lens	Open viewfinder	打开取景窗
+close_lens	Close viewfinder	关闭取景窗
+opening_lens	Opening…	正在打开…
+mute	Mute	静音
+unmute	Sound on	开声音
+strength	Strength	强度
+stamp	Date stamp	日期戳
+compare_on	Original: on	原样 开
+compare_off	Original: off	原样 关
+timer_on	3 s timer: on	倒计时 3 s 开
+timer_off	3 s timer: off	倒计时 3 s 关
+shutter	Shoot	拍
+gallery	Gallery	相册
+more_filters	More filters →	更多滤镜 →
+room_try	Try room mode	全屋试试
+camera_in_lens	The picture is in the viewfinder →	画面在取景窗里 →
+lens_note	The viewfinder is a live monitor: one eye, about 15 fps, a little behind. What you see in it is what you get.	取景窗像一块实时监视屏：单眼、约 15 帧、有点延迟。拍下来的就是窗里这张。
+room_note	Room mode can only add things: light, color, grain, the date. For B&W, go back to the viewfinder.	全屋只能往上加东西：光、色、颗粒、日期。想变黑白，回取景窗。
+no_camera	No camera feed on this device. Try a sample or your own photo.	这台设备没有摄像头画面，换示例或我的照片。
+lens_black_hint	Viewfinder stays black? Try a sample.	窗里一直是黑的？换示例看看。
+v11_badge	v1.1	v1.1
+v11_soon	%1$s comes in v1.1.	%1$s v1.1 再来。
+room_full	Room ✓	全屋 ✓
+room_partial	Room: partial	全屋 部分
+room_none	Viewfinder only	仅取景窗
+use_it	Use it	用它
+in_use	In use	正在用
+my_lut_add	My LUT +	我的 LUT ＋
+my_lut_hint	Drop in any .cube you downloaded	网上下的 .cube 直接丢进来
+lut_bad	Can't read this .cube (17 / 33 / 65 grids only).	这个 .cube 读不了（只认 17 / 33 / 65 格）。
+lut_added	Added %1$s.	加好了：%1$s。
+delete	Delete	删掉
+delete_ask	Delete this one?	删掉这张？
+cancel	Cancel	取消
+gallery_empty	Nothing yet. Go press the shutter.	还没拍。回取景按一下快门。
+gallery_count	%1$d photos · Pictures/FilterCam	%1$d 张 · Pictures/FilterCam
+gallery_go_shoot	Go shoot one	回取景拍一张
+gallery_use	Use as source	用这张当素材
+raw_badge	Orig.	原
+shot_again	Shoot again	再拍一张
+shot_redo	Redo with another filter	换个滤镜重出
+saved_line	Saved · Pictures/FilterCam · %1$d × %2$d	已存到相册 · Pictures/FilterCam · %1$d × %2$d
+saved_raw	Original saved too.	原图也存了。
+view_only	You can look but not save: no camera read-back permission. A system screenshot works too.	这张只能看，不能存：没拿到相机读回权限。用系统截屏也行。
+readback_failed	This headset can't read camera shots back. Shoot a sample or your own photo for now.	这台机器读不回相机照片，先用示例或我的照片拍吧。
+save_failed	Couldn't save: storage full or write failed. Try again?	存不进相册：存储满了或写入失败。再试一次？
+try_again	Try again	再试一次
+got_it	Got it	知道了
+go_grant	Allow	去授权
+not_now	Don't save	先不存
+permission_ask	Saving camera shots needs two permissions: camera and spatial data. We read one frame when you press the shutter, original and filtered. No video, nothing uploaded.	存相机照片要两个权限：相机、空间数据。只在你按快门那一刻读一帧（原图和成片各一张），不录像、不上传。
+guide_1	Tap ‹ › to flip filters	点 ‹ › 翻滤镜
+guide_2	Press the shutter, it goes to your gallery	按快门，照片进相册
+guide_3	Camera, timer and room mode are under More	换相机、倒计时、全屋都在「更多」里
+lens_lost	The viewfinder dropped. Turn it on again under More.	取景窗断了，在「更多」里再打开。
+lens_reopen	Reopening the viewfinder…	正在重开取景窗…
+resume_hint	Viewfinder closed. Turn it on again under More.	取景窗已收起，在「更多」里再打开。
+lens_closed_sample	Viewfinder closed. Back to the sample.	取景窗关了，来源切回示例。
+lens_unavailable	The viewfinder can't open on this device: %1$s	这台设备上取景窗开不了：%1$s
+ok	OK	好
+import_failed	Can't read that one. Try another (JPG / PNG / WebP, under 50 MB).	这张读不了，换一张试试（JPG / PNG / WebP，50 MB 以内）。
+closing_lens	Closing the viewfinder…	正在收起取景窗…
+reading	Reading	读回中
+room_back	Back to camera	回取景台
+room_recenter	Bring here	放到眼前
+room_hint	Stick left / right flips filters · A / B too	摇杆左右翻滤镜 · A/B 也行
+room_prev	Previous	上一个
+room_next	Next	下一个
+room_switched	%1$s has no room version. Switched to Light-leak Summer.	%1$s没有全屋版，先给你换成漏光的夏天。
+room_note_F01	Room version: amber haze, grain and vignette.	全屋版：琥珀纱、颗粒和暗角。
+room_note_F04	Room version: the full leak.	全屋版：漏光铺满。
+room_note_F06	Room version: the date, warm haze and grain.	全屋版：日期、暖纱和颗粒。
+room_note_F07	Room version: neon glow and scan lines. No magenta highlights.	全屋版：霓虹晕和扫描线，高光品红做不了。
+room_note_F08	Room version: the white frame and a milky haze.	全屋版：白相框和奶白纱。
+lang	Language	语言
+lang_zh	中文	中文
+lang_en	English	English
+sound	Sound	声音
+volume	Volume	音量
+vol_low	Low	小
+vol_mid	Mid	中
+vol_high	High	大
+stamp_format	Date stamp	日期戳格式
+fmt_off	Off	不显示
+save_raw	Also save camera originals	相机照片同时存原图
+save_where	Photos go to Pictures/FilterCam	照片存在 Pictures/FilterCam
+about	About	关于
+about_text	Filter Cam %1$s · Filters are our own formulas after film looks people love (Kodak Gold, Tri-X, Polaroid). Sample photos: real CC0 photos from Wikimedia Commons by Fons Heijnsbroek, Javier Molina, Tomwsulcer, Marko Milivojevic, Anthony Delanoix and Redd Angelo. Sounds: CC0 recordings. Camera pictures stay on the headset, nothing is uploaded.	空间滤镜相机 %1$s · 滤镜是我们自己按公式调的，参考了大家喜欢的胶片味道（Kodak Gold、Tri-X、Polaroid）。示例照片：Wikimedia Commons 上的 CC0 实拍，作者 Fons Heijnsbroek、Javier Molina、Tomwsulcer、Marko Milivojevic、Anthony Delanoix、Redd Angelo。音效：CC0 录音。相机画面只在头显上处理，不上传。
+guide_again	Show the tips again	重看引导
+quit_app	Quit app	退出应用
+quit_ask	Quit Filter Cam?	退出 Filter Cam？
+quit_no	Cancel	取消
+quit_yes	Quit	退出
+lens_title	Viewfinder	取景窗
+sample_street	Street corner	街角
+sample_desk	Desk	书桌
+sample_window	Window	窗边
+sample_cat	Cat	猫
+sample_food	Breakfast	早餐
+sample_night	Night	夜景
+pick_photo	Pick a photo	选一张照片
+f01_name	Weekend Roll	周末胶卷
+f01_tag	That roll from last Saturday	像上周六下午随手拍的那卷
+f01_line	Saturday afternoon, bottled.	周六下午的味道。
+f02_name	Point-and-shoot '08	2008 的卡片机
+f02_tag	Direct flash. Everyone looks pale.	闪光灯直打，谁都显白
+f02_line	Very 2008. Got it.	这张有点 2008。拍了。
+f04_name	Light-leak Summer	漏光的夏天
+f04_tag	Leaks are random. Press again, get a new one.	漏光是随机的，再按一次就不一样
+f04_line	This leak won't happen twice.	这次的漏光，下次没有了。
+f05_name	Front Page B&W	黑白新闻
+f05_tag	Like tomorrow's front page	像明天头版上的那张
+f05_line	Tomorrow's front page.	明天头版。
+f06_name	Dated '99	99 年的今天
+f06_tag	The orange digits are the point	右下角那串橙色数字才是重点
+f06_line	The date is real. The decade is up to you.	日期是真的，年份随你猜。
+f07_name	Neon Night Drive	霓虹夜车
+f07_tag	Turn the lights off first	把客厅灯关了再开这个
+f07_line	Night drive, on.	夜车开起来。
+f08_name	Instant Square	拍立得
+f08_tag	Shake it. Does nothing. Shake anyway.	拍完甩两下，没用，但想甩
+f08_line	Shake it. Does nothing. Shake anyway.	甩两下，没用，但想甩。
+f09_name	MMS Quality	彩信画质
+f09_tag	0.3 megapixels. Still loading.	30 万像素，发给谁都要等一会
+f09_line	0.3 megapixels. Plenty.	30 万像素，够用。
+f10_name	Tape Deck	录像带
+f10_tag	PLAY ▶ 00:00:07	PLAY ▶ 00:00:07
+f10_line	PLAY ▶ Recorded.	PLAY ▶ 已录下。
+lut_name	My LUT	我的 LUT
+lut_tag	Your LUT, your look	你的 LUT，你的颜色
+lut_line	Your LUT, your shot.	你的 LUT，你的照片。
+more	More	更多
+more_done	Done	收起
+all_filters	All filters	所有滤镜
+back	Back	返回
+shoot_from	Shoot from	拍什么
+sample_photo	Sample photo	示例照片
+timer	3 s timer	倒计时 3 s
+viewfinder	Viewfinder	取景窗
+recall_front	Bring back to front	叫回面前
+prev_filter	Previous filter	上一个滤镜
+next_filter	Next filter	下一个滤镜
