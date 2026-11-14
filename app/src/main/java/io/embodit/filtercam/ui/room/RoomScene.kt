@@ -416,6 +416,7 @@ class RoomScene {
             }
             "move" -> {
                 val d = drag ?: return
+                // gate:allow drag-delta dragAmount is the per-event delta and is summed into Drag.totalPx right here (reset on start)
                 val a = value.dragAmount
                 d.totalPx = Vec3(d.totalPx.x + a.x, d.totalPx.y + a.y, d.totalPx.z + a.z)
             }
