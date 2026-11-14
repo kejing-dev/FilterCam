@@ -29,6 +29,7 @@ class Prefs(context: Context) {
             volume = p.getInt("volume", 1).coerceIn(0, 2),
             saveRaw = p.getBoolean("saveRaw", true),
             permissionDenied = p.getBoolean("permissionDenied", false),
+            permissionBlocked = p.getBoolean("permissionBlocked", false),
         )
 
     fun save(s: FcState) =
@@ -44,6 +45,7 @@ class Prefs(context: Context) {
             .putInt("volume", s.volume)
             .putBoolean("saveRaw", s.saveRaw)
             .putBoolean("permissionDenied", s.permissionDenied)
+            .putBoolean("permissionBlocked", s.permissionBlocked)
             .apply()
 
     fun lang(): Lang =

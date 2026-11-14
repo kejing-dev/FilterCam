@@ -113,6 +113,7 @@ private fun BigCard(d: FilterDef, state: FcState, thumb: Bitmap?, t: Txt) {
             if (thumb != null) Image(thumb.asImageBitmap(), contentDescription = null, contentScale = if (d.square) ContentScale.Fit else ContentScale.Crop, modifier = Modifier.fillMaxSize())
             if (!d.available) Badge(t(R.string.v11_badge), Modifier.align(Alignment.TopEnd).padding(8.dp))
         }
+        // gate:allow button-gap text lines under the card picture; the only key here is a LUT card's single 「删掉」
         Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             FitText(FilterText.name(t, d.id), where = "filters/name", style = FcType.cardName, color = FcColors.OnPlate, maxLines = 1, softWrap = false)
             FitText(if (d.isLut) FilterText.fullName(t, d.id) else FilterText.tagline(t, d.id), where = "filters/tag", style = FcType.small, color = FcColors.OnPlate, maxLines = 1)

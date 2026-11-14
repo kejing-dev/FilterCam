@@ -39,8 +39,8 @@ import io.embodit.filtercam.platform.FcLog
 /*
  * 主窗口模板（taste D8「合成一个窗口模板」+ D21 拖动交给系统 + D26 设置里退出应用），
  * 拷自产线 prompts/snippets/MainWindowTemplate.kt（2026-11-02 原型站）。本应用只改了三处，结构没动：
- *  - 页签受控：current / onSelect 由 LvStore 管（调试广播和 Stage 里的药丸也要能切页，走同一套状态）；
- *  - 文案按语言传进来（中英双语，D26）；退出的二次确认状态也由 LvStore 管（调试广播 `quit` 走同一条路）；
+ *  - 页签受控：current / onSelect 由 FcStore 管（调试广播和 Stage 里的药丸也要能切页，走同一套状态）；
+ *  - 文案按语言传进来（中英双语，D26）；退出的二次确认状态也由 FcStore 管（调试广播 `quit` 走同一条路）；
  *  - 页面可以不要模板画的页标题（showTitle = false），由页面自己画标题行。
  * 规矩：
  *  - 应用全部 2D 内容都在这一个系统窗口里；页面用系统 TabBar 切（TabBar 是系统挂在窗口外的独立小窗，模拟器上从正面看在窗口上方，不叠在窗口前后）。
@@ -154,7 +154,7 @@ private fun SettingsPage(title: String, rows: @Composable ColumnScope.() -> Unit
         Text(title, fontSize = 28.sp, color = PicoTheme.colorScheme.labelPrimary)
         Spacer(Modifier.height(16.dp))
         // the long part scrolls; the exit row stays at the bottom of the page (D26)
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) { rows() }
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) { rows() }
         Spacer(Modifier.height(16.dp))
         // D26: the exit row is always last; the confirmation stays inside this window (no second panel)
         // main buttons 64 dp high, 16 dp apart (profile B31)

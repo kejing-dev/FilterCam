@@ -108,6 +108,8 @@ data class FcState(
     val isEmulator: Boolean = false,
     val permissionGranted: Boolean = false,
     val permissionDenied: Boolean = false,
+    /** Refused with "don't ask again": the dialog will not come back, only 「去设置」 helps. */
+    val permissionBlocked: Boolean = false,
     /** v1.1 card tapped: the card shakes (design S28). */
     val shakeId: String? = null,
     val shakeSerial: Int = 0,

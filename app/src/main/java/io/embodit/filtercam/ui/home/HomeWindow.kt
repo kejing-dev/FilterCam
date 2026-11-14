@@ -1,5 +1,8 @@
 package io.embodit.filtercam.ui.home
 
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableFloatStateOf
 import android.os.SystemClock
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -156,6 +159,7 @@ private fun WindowBridge(windowId: String, windowTag: String?) {
         val observer =
             LifecycleEventObserver { _, event ->
                 if (!FcStore.recalling) when (event) {
+                    Lifecycle.Event.ON_RESUME -> FcStore.permissionRecheck("window resumed") // also polled by the permission card (Settings opens beside, no resume)
                     Lifecycle.Event.ON_STOP -> if (FcStore.hiddenHome == null && FcStore.state.value.room == null) FcStore.appStopped()
                     Lifecycle.Event.ON_DESTROY ->
                         if (FcStore.hiddenHome == null && FcStore.state.value.room == null) {
@@ -207,9 +211,12 @@ private fun SettingsRows(state: FcState) {
     }
     Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
         FitText(t(R.string.volume), where = "settings/volume", style = FcType.body, color = ink, modifier = Modifier.width(140.dp), maxLines = 1)
+        // a local Float follows the finger; the step is taken on release (B20: an Int-bound slider swallows taps and small drags)
+        var vol by remember(state.volume) { mutableFloatStateOf(state.volume.toFloat()) }
         Slider(
-            value = state.volume.toFloat(),
-            onValueChange = { FcStore.volumeChanged(it.roundToInt()) },
+            value = vol,
+            onValueChange = { vol = it },
+            onValueChangeFinished = { FcStore.volumeChanged(vol.roundToInt()) },
             modifier = Modifier.weight(1f).height(48.dp),
             valueRange = 0f..2f,
             enabled = !state.muted,
@@ -235,6 +242,23 @@ private fun SettingsRows(state: FcState) {
         FitText(t(R.string.save_where), where = "settings/where", style = FcType.body, color = ink, modifier = Modifier.weight(1f), maxLines = 1)
         PillButton(t(R.string.guide_again), "settings/guide") { FcStore.guideAgain() }
     }
+    // 「怎么操作」 (B19, 2026-11-14): one line per main action, gesture and controller
+    Column(Modifier.fillMaxWidth().padding(top = 4.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        FitText(t(R.string.how_to_title), where = "settings/howTo", style = FcType.cardName, color = ink, maxLines = 1)
+        listOf(
+            R.drawable.ic_chevron_right to R.string.how_to_filter,
+            R.drawable.ic_camera to R.string.how_to_shoot,
+            R.drawable.ic_more to R.string.how_to_more,
+            R.drawable.ic_room to R.string.how_to_room,
+            R.drawable.ic_recenter to R.string.how_to_window,
+        ).forEach { (icon, line) ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(painter = painterResource(icon), contentDescription = null, modifier = Modifier.size(20.dp), tint = ink)
+                Spacer(Modifier.width(10.dp))
+                FitText(t(line), where = "settings/howTo", style = FcType.small, color = ink, maxLines = 2)
+            }
+        }
+    }
     Column(Modifier.fillMaxWidth().padding(top = 4.dp)) {
         FitText(t(R.string.about), where = "settings/about", style = FcType.cardName, color = ink, maxLines = 1)
         Spacer(Modifier.height(4.dp))
@@ -250,7 +274,7 @@ private fun SettingsRows(state: FcState) {
 private fun GuideCard(modifier: Modifier) {
     val t = LocalTxt.current
     OverlayCard(modifier, 520.dp) {
-        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
             FitText(t(R.string.app_name), where = "guide/title", style = FcType.title, color = FcColors.OnPlate, maxLines = 1)
             listOf(R.drawable.ic_filters to R.string.guide_1, R.drawable.ic_camera to R.string.guide_2, R.drawable.ic_more to R.string.guide_3).forEach { (icon, line) ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -288,7 +312,7 @@ private fun PermissionCard(modifier: Modifier) {
 private fun LensErrorCard(reason: String, modifier: Modifier) {
     val t = LocalTxt.current
     OverlayCard(modifier, 480.dp) {
-        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(12.dp).background(FcColors.Danger, CircleShape))
                 Spacer(Modifier.width(10.dp))

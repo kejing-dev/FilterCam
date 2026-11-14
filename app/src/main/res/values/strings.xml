@@ -153,4 +153,15 @@
     <string name="recall_front">Bring back to front</string>
     <string name="prev_filter">Previous filter</string>
     <string name="next_filter">Next filter</string>
+    <string name="cam_perm_need">Filter Cam needs camera access to shoot your room.</string>
+    <string name="cam_perm_denied">Camera access is off. Turn it on in Settings to shoot your room.</string>
+    <string name="cam_perm_grant">Allow</string>
+    <string name="cam_perm_settings">Open Settings</string>
+    <string name="cam_perm_retry">Ask again</string>
+    <string name="how_to_title">How to use</string>
+    <string name="how_to_filter">Change filter: pinch ‹ › (gesture) or point and pull the trigger (controller)</string>
+    <string name="how_to_shoot">Take a photo: pinch the big 拍 button, or trigger on it</string>
+    <string name="how_to_more">Camera, timer, strength, room mode: open 更多 (More)</string>
+    <string name="how_to_room">Room mode: thumbstick left / right or A / B flips the filter; 回取景台 to leave</string>
+    <string name="how_to_window">Move or close the window: the bar under it (look + pinch and drag)</string>
 </resources>

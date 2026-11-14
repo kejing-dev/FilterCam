@@ -36,7 +36,9 @@ import io.embodit.filtercam.platform.ControllerInput
 import io.embodit.filtercam.platform.FcLog
 import io.embodit.filtercam.platform.HeadTracker
 import kotlin.math.abs
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
@@ -106,8 +108,10 @@ class RoomScene {
     private val cache = HashMap<String, Textures>()
     private var building: String? = null
     private var shownFilter: String? = null
+    private var layersShown: String? = null
     private var stampTex: TextureResource? = null
     private var stampKey: String? = null
+    private var stampBuilding: String? = null
 
     private var head: HeadPose? = null
     private var frames = 0L
@@ -248,35 +252,46 @@ class RoomScene {
                     Triple(veil, lights, grains)
                 }
             // QA #2 q2-1: nine TextureResource.create in a row on the main thread (each waits for its load) froze input
-            // for > 5 s → ANR on entering room mode. Each upload now runs off the main thread, one at a time; the layers
-            // stay hidden (no black window) until the whole set is in.
-            val tex =
-                runCatching { uploadSet(bitmaps.first, bitmaps.second, bitmaps.third, look) }.getOrElse {
-                    FcLog.e("ROOM textures failed: $it", it)
-                    null
-                }
-            building = null
-            if (tex != null) {
-                cache[id] = tex
+            // for > 5 s → ANR on entering room mode. Each upload now runs off the main thread, one at a time: the veil
+            // first (it carries most of the look) and shown at once, then the light and grain phases join it.
+            try {
+                val v = runCatching { upload(bitmaps.first) }.onFailure { FcLog.e("ROOM textures failed: $it", it) }.getOrNull() ?: return@launch
+                cache[id] = Textures(v, emptyList(), emptyList(), look)
+                FcLog.i("ROOM veil $id in ${SystemClock.elapsedRealtime() - t0} ms")
+                render(FcStore.state.value)
+                val rest =
+                    runCatching { uploadLayers(bitmaps.second, bitmaps.third) }.getOrElse {
+                        if (it is CancellationException) FcLog.i("ROOM textures $id cancelled (room closed)") else FcLog.e("ROOM textures failed: $it", it)
+                        null
+                    } ?: return@launch
+                cache[id] = Textures(v, rest.first, rest.second, look)
                 FcLog.i("ROOM textures $id in ${SystemClock.elapsedRealtime() - t0} ms")
                 render(FcStore.state.value)
+            } finally {
+                building = null
             }
         }
     }
 
-    private suspend fun uploadSet(veil: Bitmap, lights: List<Bitmap>, grains: List<Bitmap>, look: RoomLook): Textures? {
-        val v = upload(veil) ?: return null
+    private suspend fun uploadLayers(lights: List<Bitmap>, grains: List<Bitmap>): Pair<List<TextureResource>, List<TextureResource>>? {
         val l = lights.map { upload(it) ?: return null }
         val g = grains.map { upload(it) ?: return null }
-        return Textures(v, l, g, look)
+        return l to g
     }
 
-    /** One texture upload off the main thread; null once the scene is gone (the caller drops the set). */
+    /**
+     * One texture upload off the main thread; null once the scene is gone (the caller drops the set). The upload itself is
+     * not cancellable: a texture made while the Stage closed is closed here, not dropped (30x room in / out left them behind
+     * and the emulator's compositor ran out, window halves drawing black).
+     */
     private suspend fun upload(b: Bitmap): TextureResource? {
         if (!attached) return null
-        val t = withContext(Dispatchers.IO) { TextureResource.create(b) }
+        val t = withContext(NonCancellable + Dispatchers.IO) { TextureResource.create(b) }
         val res = shared
-        if (!attached || res == null) return null
+        if (!attached || res == null) {
+            runCatching { t.close() }
+            return null
+        }
         return res.keep(t)
     }
 
@@ -295,10 +310,14 @@ class RoomScene {
         val k = state.strength / 100f
         if (tex != null && shownFilter != id) {
             veil?.setBaseColorTexture(tex.veil)
+            shownFilter = id
+            layersShown = null
+            FcLog.i("ROOM filter $id shown")
+        }
+        if (tex != null && tex.light.isNotEmpty() && layersShown != id) {
             light?.setBaseColorTexture(tex.light[lightPhase % PHASES])
             grain?.setBaseColorTexture(tex.grain[grainPhase % PHASES])
-            shownFilter = id
-            FcLog.i("ROOM filter $id shown")
+            layersShown = id
         }
         // strength: the veil's opacity and the added light's colour (design T2: 全屋罩 α 等比例; N19 run-time change)
         runCatching { veil?.setOpacity(k) }
@@ -306,16 +325,21 @@ class RoomScene {
         runCatching { grain?.setBaseColor(Color4(k, k, k, 1f)) }
         val ready = tex != null && shownFilter == id
         veilModel?.enabled = ready
-        lightModel?.enabled = ready && (tex?.look?.let { it.leak > 0f || it.neon > 0f || it.scanlines > 0f } == true)
-        grainModel?.enabled = ready && (tex?.look?.grain ?: 0f) > 0f
+        val layers = ready && layersShown == id
+        lightModel?.enabled = layers && (tex?.look?.let { it.leak > 0f || it.neon > 0f || it.scanlines > 0f } == true)
+        grainModel?.enabled = layers && (tex?.look?.grain ?: 0f) > 0f
         val stampText = if (state.stampOn) FcStore.stampTextFor(state.stampFormat) else null
-        if (stampText != null && stampText != stampKey) {
-            val res = shared
-            if (res != null) {
-                runCatching { res.keep(TextureResource.create(bmp(RoomLooks.stamp(stampText, 512, 128), 512, 128))) }.getOrNull()?.let {
-                    stampTex = it
-                    stamp?.setBaseColorTexture(it)
+        if (stampText != null && stampText != stampKey && stampBuilding != stampText) {
+            // off the main thread too (QA #2 q2-1); the stamp shows once its texture is in
+            stampBuilding = stampText
+            scope.launch {
+                val t = runCatching { upload(bmp(RoomLooks.stamp(stampText, 512, 128), 512, 128)) }.getOrNull()
+                stampBuilding = null
+                if (t != null) {
+                    stampTex = t
+                    stamp?.setBaseColorTexture(t)
                     stampKey = stampText
+                    render(FcStore.state.value)
                 }
             }
         }
@@ -356,7 +380,7 @@ class RoomScene {
         stepDrag()
         // light layer drifts (6 s period over 4 phases), grain at 4 Hz
         val tex = shownFilter?.let { cache[it] }
-        if (tex != null) {
+        if (tex != null && tex.light.isNotEmpty()) {
             if (now - lastPhaseMs > LIGHT_STEP_MS) {
                 lastPhaseMs = now
                 lightPhase = (lightPhase + 1) % PHASES

@@ -1,5 +1,7 @@
 package io.embodit.filtercam.ui.room
 
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -176,9 +178,14 @@ private fun RoomPanel(state: FcState) {
         FitText(note, where = "room/note", style = FcType.small, color = FcColors.OnPlate, maxLines = 1, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
         Row(Modifier.fillMaxWidth().height(40.dp), verticalAlignment = Alignment.CenterVertically) {
             FitText(t(R.string.strength), where = "room/strength", style = FcType.small, color = FcColors.OnPlate, maxLines = 1, modifier = Modifier.width(56.dp))
+            // a local Float follows the finger (B20); the store gets whole steps as it moves
+            var k by remember(state.strength) { mutableFloatStateOf(state.strength.toFloat()) }
             Slider(
-                value = state.strength.toFloat(),
-                onValueChange = { FcStore.strengthChanged(it.roundToInt()) },
+                value = k,
+                onValueChange = {
+                    k = it
+                    FcStore.strengthChanged(it.roundToInt())
+                },
                 modifier = Modifier.weight(1f).height(48.dp),
                 valueRange = 0f..100f,
                 colors = SliderDefaults.sliderColors(trackColor = PicoTheme.colorScheme.fillPrimary, progressColor = FcColors.Accent, progressHighColor = FcColors.Accent),

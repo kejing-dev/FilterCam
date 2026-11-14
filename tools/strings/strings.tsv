@@ -150,3 +150,14 @@ viewfinder	Viewfinder	取景窗
 recall_front	Bring back to front	叫回面前
 prev_filter	Previous filter	上一个滤镜
 next_filter	Next filter	下一个滤镜
+cam_perm_need	Filter Cam needs camera access to shoot your room.	要拍真房间，需要相机权限。
+cam_perm_denied	Camera access is off. Turn it on in Settings to shoot your room.	相机权限没开。到设置里打开，就能拍真房间。
+cam_perm_grant	Allow	授权
+cam_perm_settings	Open Settings	去设置
+cam_perm_retry	Ask again	再问一次
+how_to_title	How to use	怎么操作
+how_to_filter	Change filter: pinch ‹ › (gesture) or point and pull the trigger (controller)	换滤镜：手势捏一下 ‹ ›；手柄指着按扳机
+how_to_shoot	Take a photo: pinch the big 拍 button, or trigger on it	拍照：捏一下大圆键「拍」，或手柄指着按扳机
+how_to_more	Camera, timer, strength, room mode: open 更多 (More)	换相机、倒计时、强度、全屋：点「更多」
+how_to_room	Room mode: thumbstick left / right or A / B flips the filter; 回取景台 to leave	全屋模式：摇杆左右或 A / B 翻滤镜，点「回取景台」出来
+how_to_window	Move or close the window: the bar under it (look + pinch and drag)	挪窗口 / 关窗口：窗口下方的小横条，注视捏住拖

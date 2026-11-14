@@ -1,5 +1,6 @@
 package io.embodit.filtercam.ui.home
 
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -104,7 +105,9 @@ private fun Preview(state: FcState, t: Txt, w: Dp, h: Dp) {
     val square = FcStore.def(state.previewFilter).square
     Box(Modifier.size(w, h).clip(RoundedCornerShape(20.dp)).background(FcColors.Plate), contentAlignment = Alignment.Center) {
         val bmp = preview
-        if (state.noCamera && state.hoverId == null) {
+        if (state.source == Source.CAMERA && !state.permissionGranted && state.hoverId == null) {
+            CameraPermission(state, t, big = w >= 400.dp)
+        } else if (state.noCamera && state.hoverId == null) {
             FitText(t(R.string.no_camera), where = "shoot/noCamera", style = FcType.body, color = FcColors.OnPlate, textAlign = TextAlign.Center, maxLines = 3, modifier = Modifier.padding(24.dp))
         } else if (bmp != null) {
             Image(bmp.asImageBitmap(), contentDescription = null, contentScale = if (square) ContentScale.Fit else ContentScale.Crop, modifier = Modifier.fillMaxSize())
@@ -116,6 +119,45 @@ private fun Preview(state: FcState, t: Txt, w: Dp, h: Dp) {
         }
         if (state.flashing) Box(Modifier.fillMaxSize().background(FcColors.Flash.copy(alpha = 0.85f)))
         Toast(state, t, Modifier.align(Alignment.BottomCenter))
+    }
+}
+
+/**
+ * Camera source without CAMERA (B19, 2026-11-14 headset): where the picture goes, say what is missing and offer the way
+ * on: 「授权」 (the system dialog) before any answer; after a refusal 「去设置」 (the app's settings page) and, while the
+ * system will still ask, 「再问一次」. Never a black box.
+ */
+@Composable
+private fun CameraPermission(state: FcState, t: Txt, big: Boolean) {
+    val keyH = if (big) 64.dp else 48.dp
+    // Settings opens beside this window in Shared Space, so the window is not paused and gets no ON_RESUME on the way
+    // back: while this card shows, look again every 1.5 s and drop it once CAMERA is on
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(PERMISSION_POLL_MS)
+            FcStore.permissionRecheck("card poll")
+        }
+    }
+    Column(Modifier.fillMaxSize().padding(if (big) 32.dp else 14.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        Icon(painter = painterResource(R.drawable.ic_camera), contentDescription = null, modifier = Modifier.size(if (big) 48.dp else 28.dp), tint = FcColors.OnPlate)
+        Spacer(Modifier.height(if (big) 16.dp else 8.dp))
+        FitText(
+            t(if (state.permissionDenied) R.string.cam_perm_denied else R.string.cam_perm_need),
+            where = "shoot/camPerm",
+            style = if (big) FcType.body else FcType.small,
+            color = FcColors.OnPlate,
+            textAlign = TextAlign.Center,
+            maxLines = 3,
+        )
+        Spacer(Modifier.height(if (big) 20.dp else 10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            if (!state.permissionDenied) {
+                PillButton(t(R.string.cam_perm_grant), "shoot/camPermGrant", accent = true, modifier = Modifier.height(keyH)) { FcStore.askCamera("preview button") }
+            } else {
+                PillButton(t(R.string.cam_perm_settings), "shoot/camPermSettings", accent = true, modifier = Modifier.height(keyH)) { FcStore.openPermissionSettings() }
+                if (!state.permissionBlocked) PillButton(t(R.string.cam_perm_retry), "shoot/camPermRetry", onPlate = true, modifier = Modifier.height(keyH)) { FcStore.askCamera("ask again") }
+            }
+        }
     }
 }
 
@@ -164,6 +206,7 @@ private var lensNoteShown = false
 private const val NOTICE_MS = 3_000L
 private const val LENS_NOTE_MS = 4_000L
 private const val TAGLINE_MS = 2_000L
+private const val PERMISSION_POLL_MS = 1_500L
 
 // ---------------------------------------------------------------------------------------------
 // main screen rows
@@ -337,9 +380,14 @@ private fun SampleRow(state: FcState, t: Txt) {
 private fun StrengthRow(state: FcState, t: Txt) {
     Row(Modifier.fillMaxWidth().height(ROW_H), verticalAlignment = Alignment.CenterVertically) {
         Label(t(R.string.strength), "more/strength", Modifier.width(120.dp))
+        // a local Float follows the finger (B20); the store gets whole steps as it moves
+        var k by remember(state.strength) { mutableFloatStateOf(state.strength.toFloat()) }
         Slider(
-            value = state.strength.toFloat(),
-            onValueChange = { FcStore.strengthChanged(it.roundToInt()) },
+            value = k,
+            onValueChange = {
+                k = it
+                FcStore.strengthChanged(it.roundToInt())
+            },
             modifier = Modifier.weight(1f).height(48.dp),
             valueRange = 0f..100f,
             enabled = !state.compare,

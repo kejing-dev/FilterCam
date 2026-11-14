@@ -153,4 +153,15 @@
     <string name="recall_front">叫回面前</string>
     <string name="prev_filter">上一个滤镜</string>
     <string name="next_filter">下一个滤镜</string>
+    <string name="cam_perm_need">要拍真房间，需要相机权限。</string>
+    <string name="cam_perm_denied">相机权限没开。到设置里打开，就能拍真房间。</string>
+    <string name="cam_perm_grant">授权</string>
+    <string name="cam_perm_settings">去设置</string>
+    <string name="cam_perm_retry">再问一次</string>
+    <string name="how_to_title">怎么操作</string>
+    <string name="how_to_filter">换滤镜：手势捏一下 ‹ ›；手柄指着按扳机</string>
+    <string name="how_to_shoot">拍照：捏一下大圆键「拍」，或手柄指着按扳机</string>
+    <string name="how_to_more">换相机、倒计时、强度、全屋：点「更多」</string>
+    <string name="how_to_room">全屋模式：摇杆左右或 A / B 翻滤镜，点「回取景台」出来</string>
+    <string name="how_to_window">挪窗口 / 关窗口：窗口下方的小横条，注视捏住拖</string>
 </resources>

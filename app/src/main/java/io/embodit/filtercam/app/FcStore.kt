@@ -140,7 +140,8 @@ object FcStore {
         val luts = renderer.importedLuts()
         var start = prefs.restore(FcState(isEmulator = isEmulator, luts = luts))
         if (Filters.of(start.filterId, luts)?.available != true) start = start.copy(filterId = Filters.F01.id)
-        start = start.copy(permissionGranted = HelperActivity.granted(context), overlay = if (prefs.guideSeen()) null else Overlay.GUIDE)
+        val granted = HelperActivity.granted(context)
+        start = start.copy(permissionGranted = granted, permissionDenied = start.permissionDenied && !granted, permissionBlocked = start.permissionBlocked && !granted, overlay = if (prefs.guideSeen()) null else Overlay.GUIDE)
         _state.value = start
         FcLog.i("STATE ${start.stateId} init filter=${start.filterId} lang=${start.lang} emulator=$isEmulator luts=${luts.size}")
         refreshPreview()
@@ -301,12 +302,15 @@ object FcStore {
     }
 
     /** Design T4: 相机 opens the viewfinder first (camera only while it is open); 我的照片 goes through the picker. */
-    fun sourceSelected(src: Source) {
+    /** [auto]: the start-up camera on the headset; it asks only if the user has never refused (no dialog on every start). */
+    fun sourceSelected(src: Source, auto: Boolean = false) {
         when (src) {
             Source.SAMPLE -> set(s.copy(source = Source.SAMPLE, notice = null), "source sample")
             Source.CAMERA -> {
                 set(s.copy(source = Source.CAMERA, notice = null), "source camera")
                 if (!s.lens.open) openLens("camera source")
+                // ask before the camera is used (2026-11-14 headset: the app never asked); the shutter's read-back needs it
+                if (!cameraGranted() && !s.permissionBlocked && !(auto && s.permissionDenied)) askCamera(if (auto) "camera source (start)" else "camera source")
             }
             Source.IMPORT -> {
                 if (importImg != null && s.importName != null) set(s.copy(source = Source.IMPORT, notice = null), "source import (kept)")
@@ -546,18 +550,53 @@ object FcStore {
         set(s.copy(overlay = null), "permission allow")
         val fake = fakeReadback
         if (fake != null) return permissionResult(fake != "denied")
+        permissionFor = "shutter"
         val ctx = appContext ?: return
         HelperActivity.launch(ctx, HelperActivity.MODE_PERMISSION)
     }
 
+    /** What the pending CAMERA request is for: "shutter" (S07, read back after it) or "source" (camera picked, nothing after). */
+    private var permissionFor: String? = null
+
+    private fun cameraGranted(): Boolean = appContext?.let { HelperActivity.granted(it) } ?: s.permissionGranted
+
+    /** The system CAMERA dialog for the camera source (「授权」 / 「再问一次」 on the preview go here too). */
+    fun askCamera(why: String) {
+        if (cameraGranted()) return permissionRecheck("ask: already granted")
+        permissionFor = "source"
+        FcLog.i("PERMISSION ask ($why)")
+        val ctx = appContext ?: return
+        HelperActivity.launch(ctx, HelperActivity.MODE_PERMISSION)
+    }
+
+    /** 「去设置」 after a refusal: the app's page in system settings; [permissionRecheck] on the way back. */
+    fun openPermissionSettings() {
+        FcLog.i("PERMISSION open settings")
+        appContext?.let { HelperActivity.openAppSettings(it) }
+    }
+
+    /** The main window resumed (maybe back from Settings): pick up a permission granted or taken away there. */
+    fun permissionRecheck(why: String) {
+        val now = cameraGranted()
+        if (now == s.permissionGranted) return
+        set(s.copy(permissionGranted = now, permissionDenied = if (now) false else s.permissionDenied, permissionBlocked = if (now) false else s.permissionBlocked), "permission recheck $now ($why)")
+    }
+
     fun permissionNotNow() = set(s.copy(overlay = null, permissionDenied = true, card = ShotCard(CardKind.VIEW_ONLY, filterId = s.filterId, serial = ++cardSerial)), "permission not now")
 
-    fun permissionResult(granted: Boolean) {
-        if (!granted) {
-            set(s.copy(permissionDenied = true, card = ShotCard(CardKind.VIEW_ONLY, filterId = s.filterId, serial = ++cardSerial)), "permission denied")
+    fun permissionResult(granted: Boolean, canAskAgain: Boolean = true) {
+        val forSource = permissionFor == "source"
+        permissionFor = null
+        if (forSource) {
+            // camera picked: nothing to read back yet, only remember the answer (the preview shows 授权 / 去设置 until granted)
+            set(s.copy(permissionGranted = granted, permissionDenied = !granted, permissionBlocked = !granted && !canAskAgain), "permission ${if (granted) "granted" else "denied"} (camera source)")
             return
         }
-        set(s.copy(permissionGranted = true, permissionDenied = false), "permission granted")
+        if (!granted) {
+            set(s.copy(permissionDenied = true, permissionBlocked = !canAskAgain, card = ShotCard(CardKind.VIEW_ONLY, filterId = s.filterId, serial = ++cardSerial)), "permission denied")
+            return
+        }
+        set(s.copy(permissionGranted = true, permissionDenied = false, permissionBlocked = false), "permission granted")
         // design N16: if the permission only counts for sessions created after it, destroy and create again (S07r)
         if (fakeReadback == "sessionLevel" || (!s.isEmulator && SESSION_LEVEL_PERMISSION)) reopenThenRead() else readBack()
     }
@@ -734,7 +773,11 @@ object FcStore {
     private var autoLensDone = false
 
     private fun autoLens(why: String) {
-        main.postDelayed({ if (s.page == Pages.SHOOT && s.overlay == null && s.room == null && !s.lens.open && s.lensError == null) openLens("auto ($why)") }, AUTO_LENS_MS)
+        main.postDelayed({
+            if (s.page != Pages.SHOOT || s.overlay != null || s.room != null || s.lens.open || s.lensError != null) return@postDelayed
+            // design entryFlow: on the headset the viewfinder opens on the camera (asking for CAMERA first), on the emulator on the sample
+            if (!s.isEmulator && !s.permissionBlocked && s.source == Source.SAMPLE) sourceSelected(Source.CAMERA, auto = true) else openLens("auto ($why)")
+        }, AUTO_LENS_MS)
     }
 
     /** Set while the main window is swapped for a new one (「叫回面前」): its ON_STOP / ON_DESTROY are not the user leaving. */

@@ -1,8 +1,8 @@
 # Filter Cam（空间滤镜相机）
 
-PICO OS 6 spatial app (v0.1.1), Kotlin, PICO Spatial SDK 6.1.9 (BOM), package `io.embodit.filtercam`. Factory app
+PICO OS 6 spatial app (v0.1.2), Kotlin, PICO Spatial SDK 6.1.9 (BOM), package `io.embodit.filtercam`. Factory app
 `filter-cam`. Design package (binding): `C:\Users\Admin\Downloads\spatial-app-factory\apps\filter-cam\design-package.json`
-(states S00–S28, panels P1–P9, entities E0–E4, interactions T1–T18; gate B 2026-11-05: no fisheye). Built from Low Vision
+(states S00–S29, panels P1–P9, entities E0–E4, interactions T1–T18; gate B 2026-11-05: no fisheye). Built from Low Vision
 Walk pieces (LensController, LensSpot, main window template, room Stage veil, PanelRig, LevelGate). All 2D UI is
 SpatialUI + `PicoTheme` (`FcTheme`); no Material anywhere.
 
@@ -19,7 +19,8 @@ app/src/main/java/io/embodit/filtercam/
   app/                  FcState + FcStore: the one state holder (windows, Stage and debug receiver share it)
   platform/             Renderer (preview / thumbnails / LUTs / samples), LensController (SpatialML), PhotoRepo (MediaStore),
                         SoundBank, HelperActivity (photo picker, .cube picker, permissions), Prefs, trackers
-  ui/home/              HomeWindow (TabBar pages, settings, cards over the page), ShootPage, FiltersPage, GalleryPage, LensSpot
+  ui/home/              HomeWindow (TabBar 取景 / 相册 / 设置, settings with 叫回面前 + 退出应用, cards over the page),
+                        ShootPage (main screen 7 controls + 「更多」 drawer S29), FiltersPage (from 更多 → 所有滤镜), GalleryPage, LensSpot
   ui/shot/              ShotCardView (P4, drawn over the page inside P1 since v0.1.1)
   ui/room/              RoomScreen (Stage + P5), RoomScene (ECS overlays, per-frame system), PanelRig, SceneKit
 app/src/debug/          DebugCommandReceiver + DebugCommands (debug builds only)
@@ -59,6 +60,22 @@ Stop the Gradle daemons (`./gradlew.bat --stop`) before starting an emulator on 
   never call it on the main thread (`LensController.createSession`: IO, waits for the destroy, 8 s timeout).
 - Sample photos: `assets/samples/CREDITS.md` (CC0, Wikimedia Commons); re-fetch with `python tools/samples/fetch_samples.py`.
 
+## v0.1.2 notes (design round 3, QA #2)
+
+- Camera page = preview 560 x 420 + ‹ name › + 更多 · 拍 · 静音 (B31: 7 controls with the 3 tabs; mute exempt). Everything else
+  is in the 「更多」 drawer inside the same window; 「滤镜」 is no longer a tab (`MainWindowPage.inTabBar = false`).
+- The viewfinder opens by itself after 「知道了」 and once per start (`FcStore.windowReady` / `autoLens`).
+- Room mode uploads its 9 textures one by one on `Dispatchers.IO` (`RoomScene.uploadSet`): nine `TextureResource.create`
+  in a row on the main thread was the QA #2 ANR. Keep texture uploads off the main thread.
+- 「叫回面前」 opens a new instance of the `Home` window (new tag, system default placement) and closes the current one;
+  `FcStore.recalling` keeps that close from counting as the user leaving.
+- Side-by-side buttons are 16 dp apart, main buttons 64 dp high (ui_gates button-gap).
+- CAMERA only (no SPATIAL_DATA): the SpatialML passthrough in Secure Mode needs no permission, reading the frame back
+  (shutter) needs CAMERA. Asked when the camera source is picked (headset: at start); the preview shows 授权 / 去设置 /
+  再问一次 until granted and re-checks every 1.5 s. Emulator test: `pm revoke io.embodit.filtercam android.permission.CAMERA`,
+  `source camera`, tap the system dialog (Don't allow ≈ 1340,783 / Allow ≈ 1592,783 on the 2560 frame).
+- Source: https://github.com/kejing-dev/FilterCam (private).
+
 ## Debug broadcast (QA)
 
 `adb -s <dev> shell am broadcast -a io.embodit.filtercam.DEBUG -p io.embodit.filtercam --es cmd <name> [--es s <arg>] [extras]`
@@ -67,7 +84,8 @@ logs `CMD ok|fail <name>` under tag `FilterCam`; `state` logs `CMD reached <id>`
 
 | command | effect |
 |---|---|
-| `state --es id S00..S28` (also `S07r`, `S08n`, `S08f`) | jump to a design state through the tap paths |
+| `state --es id S00..S29` (also `S07r`, `S08n`, `S08f`) | jump to a design state through the tap paths |
+| `more [close]` · `step next\|prev` · `recall` | 「更多」 drawer · ‹ › on the camera page · settings 「叫回面前」 |
 | `filter --es id F01..F10\|LUT:<name>` · `hover --es id F02` / `hover off` | choose / look at a card |
 | `source sample\|camera\|import [--es photo street\|desk\|window\|cat\|food\|night]` · `sample <name>` | picture source |
 | `strength --ei n 0..100` · `stamp on\|off` · `stampFormat short\|dotted\|off` · `compare on\|off` · `timer on\|off` | camera page |

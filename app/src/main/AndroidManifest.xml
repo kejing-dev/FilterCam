@@ -2,9 +2,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Camera read-back on the shutter (design container.permissions / N16): asked on the first camera shot only. -->
+    <!-- Camera read-back on the shutter (design N16): asked when the camera source is picked (headset: right after the guide) or on the first camera shot. -->
     <uses-permission android:name="android.permission.CAMERA" />
-    <uses-permission android:name="com.picovr.permission.SPATIAL_DATA" />
+    <!-- no com.picovr.permission.SPATIAL_DATA: only depth / positioning input needs it; the viewfinder uses the passthrough camera only (CAMERA for read-back) -->
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <application
@@ -57,7 +57,7 @@
                 android:value="1" />
         </activity>
 
-        <!-- System pickers and the permission request (photo picker, .cube document, CAMERA + SPATIAL_DATA). -->
+        <!-- System pickers and the permission request (photo picker, .cube document, CAMERA). -->
         <activity
             android:name=".platform.HelperActivity"
             android:exported="false"
