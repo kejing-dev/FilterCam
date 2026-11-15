@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import io.embodit.filtercam.domain.CameraFlow
 import io.embodit.filtercam.domain.CameraMasks
 import io.embodit.filtercam.domain.CubeError
 import io.embodit.filtercam.domain.FilterDef
@@ -157,7 +158,7 @@ object FcStore {
         val visual =
             prev.previewFilter != next.previewFilter || prev.strength != next.strength || prev.stampOn != next.stampOn || prev.stampFormat != next.stampFormat ||
                 prev.compare != next.compare || prev.source != next.source || prev.sample != next.sample || prev.importName != next.importName ||
-                prev.lens.open != next.lens.open || prev.luts != next.luts
+                prev.lens.open != next.lens.open || prev.luts != next.luts || prev.permissionGranted != next.permissionGranted || prev.permissionDenied != next.permissionDenied
         if (visual) refreshPreview()
     }
 
@@ -209,7 +210,9 @@ object FcStore {
             }
         }
         if (lensOpen && st.source == Source.CAMERA && !hovering) {
-            if (st.isEmulator) showNoCameraInLens()
+            // the viewfinder says the same as the card on the page until CAMERA is on (QA #3 known issue: it said "no camera")
+            if (!st.permissionGranted) showTextInLens(t(if (st.permissionDenied) io.embodit.filtercam.R.string.cam_perm_denied else io.embodit.filtercam.R.string.cam_perm_need), "permission")
+            else if (st.isEmulator) showNoCameraInLens()
             else scope.launch {
                 val m = withContext(Dispatchers.Default) { CameraMasks.of(lookOf(st, st.filterId, liveSeed), LensController.W, LensController.H) }
                 lensHost?.showCamera(m)
@@ -218,9 +221,11 @@ object FcStore {
     }
 
     /** S22: the viewfinder shows the "no camera" line as a still picture (design: 应用上传的占位 640×480). */
-    private fun showNoCameraInLens() {
+    private fun showNoCameraInLens() = showTextInLens(t(io.embodit.filtercam.R.string.no_camera), "no camera")
+
+    /** One line of text on the viewfinder's panel (no camera on the emulator, CAMERA not granted). */
+    private fun showTextInLens(text: String, what: String) {
         val ctx = appContext ?: return
-        val text = t(io.embodit.filtercam.R.string.no_camera)
         scope.launch {
             val rgb =
                 withContext(Dispatchers.Default) {
@@ -233,7 +238,7 @@ object FcStore {
                     Bitmaps.rgbBytes(Bitmaps.toImg(bmp), LensController.W, LensController.H)
                 }
             lensHost?.showPhoto(rgb)
-            FcLog.i("LENS no camera placeholder (${ctx.packageName})")
+            FcLog.i("LENS $what placeholder (${ctx.packageName})")
         }
     }
 
@@ -552,6 +557,7 @@ object FcStore {
         if (fake != null) return permissionResult(fake != "denied")
         permissionFor = "shutter"
         val ctx = appContext ?: return
+        askingCamera = true
         HelperActivity.launch(ctx, HelperActivity.MODE_PERMISSION)
     }
 
@@ -566,6 +572,7 @@ object FcStore {
         permissionFor = "source"
         FcLog.i("PERMISSION ask ($why)")
         val ctx = appContext ?: return
+        askingCamera = true
         HelperActivity.launch(ctx, HelperActivity.MODE_PERMISSION)
     }
 
@@ -587,9 +594,11 @@ object FcStore {
     fun permissionResult(granted: Boolean, canAskAgain: Boolean = true) {
         val forSource = permissionFor == "source"
         permissionFor = null
+        askingCamera = false
         if (forSource) {
             // camera picked: nothing to read back yet, only remember the answer (the preview shows 授权 / 去设置 until granted)
             set(s.copy(permissionGranted = granted, permissionDenied = !granted, permissionBlocked = !granted && !canAskAgain), "permission ${if (granted) "granted" else "denied"} (camera source)")
+            reopenAfterAnswer()
             return
         }
         if (!granted) {
@@ -925,8 +934,30 @@ object FcStore {
 
     /** The main window went to the background (HOME, another app): the session goes (design S24). */
     fun appStopped() {
-        if (s.lens.open) closeLens("background", toSample = true, kind = NoticeKind.RESUME)
-        if (s.countdown != null) set(s.copy(countdown = null), "countdown stopped (background)")
+        // our own CAMERA dialog backgrounds the window on the headset: that is not the user leaving (QA #3 q3-1)
+        if (askingCamera) FcLog.i("WINDOW stopped by the CAMERA dialog: viewfinder kept")
+        if (CameraFlow.closeOnStop(s.lens.open, askingCamera)) closeLens("background", toSample = true, kind = NoticeKind.RESUME)
+        if (s.countdown != null && !askingCamera) set(s.copy(countdown = null), "countdown stopped (background)")
+    }
+
+    /** The main window is in front again: a viewfinder the CAMERA answer left pending opens now (QA #3 q3-1). */
+    fun windowResumed() {
+        val open = CameraFlow.onResume(reopenPending, s.lens.open, s.page == Pages.SHOOT, s.room != null)
+        reopenPending = false
+        if (open) openLens("resume after the CAMERA answer")
+    }
+
+    /** The CAMERA dialog is up (from [askCamera] or the shutter's S07 card). */
+    @Volatile private var askingCamera = false
+    private var reopenPending = false
+
+    private fun reopenAfterAnswer() {
+        val resumed = homeLife.value == androidx.lifecycle.Lifecycle.Event.ON_RESUME.name
+        when (CameraFlow.afterAnswer(s.lens.open, resumed, s.page == Pages.SHOOT, s.room != null)) {
+            CameraFlow.Reopen.NOW -> openLens("CAMERA answered")
+            CameraFlow.Reopen.ON_RESUME -> reopenPending = true.also { FcLog.i("LENS reopens when the window is back") }
+            CameraFlow.Reopen.NONE -> Unit
+        }
     }
 
     fun quitClicked() = set(s.copy(quitAsked = true), "quit asked")

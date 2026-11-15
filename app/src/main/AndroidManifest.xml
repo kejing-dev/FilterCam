@@ -4,7 +4,8 @@
 
     <!-- Camera read-back on the shutter (design N16): asked when the camera source is picked (headset: right after the guide) or on the first camera shot. -->
     <uses-permission android:name="android.permission.CAMERA" />
-    <!-- no com.picovr.permission.SPATIAL_DATA: only depth / positioning input needs it; the viewfinder uses the passthrough camera only (CAMERA for read-back) -->
+    <!-- SDK docs say read-back of camera input needs CAMERA only, but the 透写台 headset test found read-back needs CAMERA + SPATIAL_DATA (design container.permissions): ask for both -->
+    <uses-permission android:name="com.picovr.permission.SPATIAL_DATA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <application

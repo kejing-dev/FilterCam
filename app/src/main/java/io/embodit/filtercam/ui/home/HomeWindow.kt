@@ -159,7 +159,10 @@ private fun WindowBridge(windowId: String, windowTag: String?) {
         val observer =
             LifecycleEventObserver { _, event ->
                 if (!FcStore.recalling) when (event) {
-                    Lifecycle.Event.ON_RESUME -> FcStore.permissionRecheck("window resumed") // also polled by the permission card (Settings opens beside, no resume)
+                    Lifecycle.Event.ON_RESUME -> {
+                        FcStore.permissionRecheck("window resumed")
+                        FcStore.windowResumed()
+                    } // also polled by the permission card (Settings opens beside, no resume)
                     Lifecycle.Event.ON_STOP -> if (FcStore.hiddenHome == null && FcStore.state.value.room == null) FcStore.appStopped()
                     Lifecycle.Event.ON_DESTROY ->
                         if (FcStore.hiddenHome == null && FcStore.state.value.room == null) {
@@ -318,7 +321,8 @@ private fun LensErrorCard(reason: String, modifier: Modifier) {
                 Spacer(Modifier.width(10.dp))
                 FitText(t(R.string.lens_unavailable, ""), where = "lensError/title", style = FcType.cardName, color = FcColors.OnPlate, maxLines = 2)
             }
-            FitText(reason, where = "lensError/reason", style = FcType.small, color = FcColors.OnPlate, maxLines = 3)
+            // a plain line, not the technical reason (QA #3 known issue: "SpatialML not ready after 8 s" on the card); the reason is in the log
+            FitText(t(R.string.lens_fail_hint), where = "lensError/reason", style = FcType.small, color = FcColors.OnPlate, maxLines = 3)
             Button(onClick = { FcStore.lensErrorOk() }, modifier = Modifier.height(64.dp).width(140.dp), colors = ButtonDefaults.buttonColors(containerColor = FcColors.Accent, contentColor = FcColors.OnAccent)) {
                 Text(t(R.string.ok), color = FcColors.OnAccent)
             }

@@ -69,7 +69,7 @@
     <string name="lens_reopen">正在重开取景窗…</string>
     <string name="resume_hint">取景窗已收起，在「更多」里再打开。</string>
     <string name="lens_closed_sample">取景窗关了，来源切回示例。</string>
-    <string name="lens_unavailable">这台设备上取景窗开不了：%1$s</string>
+    <string name="lens_unavailable">取景窗开不了%1$s</string>
     <string name="ok">好</string>
     <string name="import_failed">这张读不了，换一张试试（JPG / PNG / WebP，50 MB 以内）。</string>
     <string name="closing_lens">正在收起取景窗…</string>
@@ -164,4 +164,5 @@
     <string name="how_to_more">换相机、倒计时、强度、全屋：点「更多」</string>
     <string name="how_to_room">全屋模式：摇杆左右或 A / B 翻滤镜，点「回取景台」出来</string>
     <string name="how_to_window">挪窗口 / 关窗口：窗口下方的小横条，注视捏住拖</string>
+    <string name="lens_fail_hint">取景窗这次没开起来。点「好」，再到「更多」里打开取景窗试试。</string>
 </resources>

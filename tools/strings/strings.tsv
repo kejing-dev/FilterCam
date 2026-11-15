@@ -66,7 +66,7 @@ lens_lost	The viewfinder dropped. Turn it on again under More.	取景窗断了�
 lens_reopen	Reopening the viewfinder…	正在重开取景窗…
 resume_hint	Viewfinder closed. Turn it on again under More.	取景窗已收起，在「更多」里再打开。
 lens_closed_sample	Viewfinder closed. Back to the sample.	取景窗关了，来源切回示例。
-lens_unavailable	The viewfinder can't open on this device: %1$s	这台设备上取景窗开不了：%1$s
+lens_unavailable	The viewfinder can't open%1$s	取景窗开不了%1$s
 ok	OK	好
 import_failed	Can't read that one. Try another (JPG / PNG / WebP, under 50 MB).	这张读不了，换一张试试（JPG / PNG / WebP，50 MB 以内）。
 closing_lens	Closing the viewfinder…	正在收起取景窗…
@@ -161,3 +161,4 @@ how_to_shoot	Take a photo: pinch the big 拍 button, or trigger on it	拍照：�
 how_to_more	Camera, timer, strength, room mode: open 更多 (More)	换相机、倒计时、强度、全屋：点「更多」
 how_to_room	Room mode: thumbstick left / right or A / B flips the filter; 回取景台 to leave	全屋模式：摇杆左右或 A / B 翻滤镜，点「回取景台」出来
 how_to_window	Move or close the window: the bar under it (look + pinch and drag)	挪窗口 / 关窗口：窗口下方的小横条，注视捏住拖
+lens_fail_hint	The viewfinder didn’t start this time. Tap OK, then turn it on again under More.	取景窗这次没开起来。点「好」，再到「更多」里打开取景窗试试。
