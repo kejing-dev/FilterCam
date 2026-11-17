@@ -1,6 +1,6 @@
 # Filter Cam（空间滤镜相机）
 
-PICO OS 6 spatial app (v0.1.3), Kotlin, PICO Spatial SDK 6.1.9 (BOM), package `io.embodit.filtercam`. Factory app
+PICO OS 6 spatial app (v0.1.4), Kotlin, PICO Spatial SDK 6.1.9 (BOM), package `io.embodit.filtercam`. Factory app
 `filter-cam`. Design package (binding): `C:\Users\Admin\Downloads\spatial-app-factory\apps\filter-cam\design-package.json`
 (states S00–S29, panels P1–P9, entities E0–E4, interactions T1–T18; gate B 2026-11-05: no fisheye). Built from Low Vision
 Walk pieces (LensController, LensSpot, main window template, room Stage veil, PanelRig, LevelGate). All 2D UI is
@@ -74,7 +74,9 @@ Stop the Gradle daemons (`./gradlew.bat --stop`) before starting an emulator on 
   needs CAMERA per the SDK docs and both per the 透写台 headset test). Asked when the camera source is picked (headset: at
   start); the preview and the viewfinder panel show 授权 / 去设置 / 再问一次 until granted, re-checked every 1.5 s.
 - On the headset the system dialog backgrounds the main window: `domain/CameraFlow` keeps the viewfinder while our dialog
-  is up and reopens it after the answer (now, or on ON_RESUME). Do not close the viewfinder on that ON_STOP. Emulator test: `pm revoke io.embodit.filtercam android.permission.CAMERA`,
+  is up and reopens it after the answer (now, or on ON_RESUME). Do not close the viewfinder on that ON_STOP.
+- Never create the SpatialML session while that dialog is up (QA #4: the spot window has no focus then and the container
+  lands over the main window for good): with a dialog coming, the viewfinder opens after the answer (`CameraFlow.openWithSource`). Emulator test: `pm revoke io.embodit.filtercam android.permission.CAMERA`,
   `source camera`, tap the system dialog (Don't allow ≈ 1340,783 / Allow ≈ 1592,783 on the 2560 frame).
 - Source: https://github.com/kejing-dev/FilterCam (private).
 

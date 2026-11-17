@@ -50,6 +50,40 @@ class CameraFlowTest {
         assertTrue("viewfinder after 允许", s.lensOpen)
     }
 
+    /**
+     * QA #4 q4-1: on a first grant the session must be created only after the answer with the window in front (the spot
+     * window has focus then, so the container lands in its slot right of the main window, not over it).
+     */
+    @Test fun firstGrantCreatesTheSessionOnlyAfterTheAnswerWithTheWindowInFront() {
+        var lensOpen = false
+        var dialogUp = false
+        var resumed = true
+        var pending = false
+        val sessions = ArrayList<Pair<Boolean, Boolean>>() // (dialog up, window in front) at each session creation
+        fun open() {
+            lensOpen = true
+            sessions += dialogUp to resumed
+        }
+        // cold start on the headset, camera picked, CAMERA not granted yet → the dialog comes
+        if (CameraFlow.openWithSource(lensOpen, willAsk = true)) open()
+        dialogUp = true
+        resumed = false
+        if (CameraFlow.closeOnStop(lensOpen, askingCamera = true)) lensOpen = false
+        dialogUp = false // 允许
+        when (CameraFlow.afterAnswer(lensOpen, resumed, onCameraPage = true, inRoom = false)) {
+            Reopen.NOW -> open()
+            Reopen.ON_RESUME -> pending = true
+            Reopen.NONE -> Unit
+        }
+        resumed = true
+        if (CameraFlow.onResume(pending, lensOpen, onCameraPage = true, inRoom = false)) open()
+        assertTrue("viewfinder open after 允许", lensOpen)
+        assertEquals(listOf(false to true), sessions) // exactly one session, dialog gone, window in front
+        // already granted (cold start): no dialog → opens with the source at once
+        assertTrue(CameraFlow.openWithSource(lensOpen = false, willAsk = false))
+        assertFalse(CameraFlow.openWithSource(lensOpen = true, willAsk = false))
+    }
+
     @Test fun ownDialogDoesNotCloseTheViewfinderButLeavingDoes() {
         assertFalse(CameraFlow.closeOnStop(lensOpen = true, askingCamera = true))
         assertTrue(CameraFlow.closeOnStop(lensOpen = true, askingCamera = false))

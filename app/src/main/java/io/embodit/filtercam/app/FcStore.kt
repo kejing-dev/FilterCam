@@ -313,9 +313,13 @@ object FcStore {
             Source.SAMPLE -> set(s.copy(source = Source.SAMPLE, notice = null), "source sample")
             Source.CAMERA -> {
                 set(s.copy(source = Source.CAMERA, notice = null), "source camera")
-                if (!s.lens.open) openLens("camera source")
                 // ask before the camera is used (2026-11-14 headset: the app never asked); the shutter's read-back needs it
-                if (!cameraGranted() && !s.permissionBlocked && !(auto && s.permissionDenied)) askCamera(if (auto) "camera source (start)" else "camera source")
+                val ask = !cameraGranted() && !s.permissionBlocked && !(auto && s.permissionDenied)
+                // QA #4 q4-1: a session created while the dialog is up (the spot window never gets focus) lands in the middle
+                // of the main window and stays there; so with a dialog coming the viewfinder opens after the answer instead
+                // (CameraFlow.afterAnswer, once the window is back in front and the spot can take focus)
+                if (CameraFlow.openWithSource(s.lens.open, ask)) openLens("camera source")
+                if (ask) askCamera(if (auto) "camera source (start)" else "camera source")
             }
             Source.IMPORT -> {
                 if (importImg != null && s.importName != null) set(s.copy(source = Source.IMPORT, notice = null), "source import (kept)")
