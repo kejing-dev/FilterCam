@@ -10,6 +10,8 @@ import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import io.embodit.filtercam.app.FcStore
+import io.embodit.filtercam.domain.CamPerm
+import io.embodit.filtercam.domain.CamPerms
 
 /**
  * A see-through activity that runs one system dialog for the store and finishes: the photo picker (design T8, no
@@ -19,20 +21,24 @@ import io.embodit.filtercam.app.FcStore
  *
  * CAMERA + SPATIAL_DATA (2026-11-14 headset: the app never asked, the user got no dialog): the viewfinder's own passthrough
  * in Secure Mode needs no permission; reading the camera frame back (the shutter) needs CAMERA per the SDK docs and
- * CAMERA + SPATIAL_DATA per the 透写台 headset test (design container.permissions), so both are asked together.
+ * CAMERA + SPATIAL_DATA per the 透写台 headset test (design container.permissions). Each is checked on its own and only
+ * the missing ones are asked (profile D58: CAMERA on, SPATIAL_DATA refused for good, and the app only said "camera").
  */
 class HelperActivity : ComponentActivity() {
     private var mode: String? = null
     private var answered = false
 
+    /** What this dialog asked for (only the missing ones: D58, a granted CAMERA is not asked again). */
+    private var requested: Set<CamPerm> = emptySet()
+
     private val askCamera =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
-            val granted = PERMISSIONS.all { result[it] == true || checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
-            // refused with "don't ask again" (or by policy): the system will not show the dialog again, only Settings helps
-            val canAskAgain = granted || PERMISSIONS.any { shouldShowRequestPermissionRationale(it) }
-            FcLog.i("PERMISSION result $result granted=$granted canAskAgain=$canAskAgain")
+            val missing = missing(this)
+            // refused with "don't ask again", or USER_FIXED (refused by the system with no dialog): only Settings helps
+            val blocked = CamPerms.blockedAfterAnswer(requested, missing) { shouldShowRequestPermissionRationale(it.id) }
+            FcLog.i("PERMISSION result $result missing=${missing.map { it.name }} blocked=${blocked.map { it.name }}")
             answered = true
-            FcStore.permissionResult(granted, canAskAgain)
+            FcStore.permissionResult(missing, blocked)
             finish()
         }
 
@@ -49,7 +55,15 @@ class HelperActivity : ComponentActivity() {
                 start(pick, REQ_PHOTO)
             }
             MODE_LUT -> start(Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), REQ_LUT)
-            MODE_PERMISSION -> askCamera.launch(PERMISSIONS)
+            MODE_PERMISSION -> {
+                requested = missing(this)
+                FcLog.i("PERMISSION asking ${requested.map { it.name }}")
+                if (requested.isEmpty()) {
+                    answered = true
+                    FcStore.permissionResult(emptySet(), emptySet())
+                    finish()
+                } else askCamera.launch(requested.map { it.id }.toTypedArray())
+            }
             else -> finish()
         }
     }
@@ -58,10 +72,10 @@ class HelperActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         if (mode == MODE_PERMISSION && !answered && isFinishing) {
-            val granted = granted(this)
-            FcLog.i("PERMISSION helper closed without an answer: granted=$granted")
+            val missing = missing(this)
+            FcLog.i("PERMISSION helper closed without an answer: missing=${missing.map { it.name }}")
             answered = true
-            FcStore.permissionResult(granted, canAskAgain = true)
+            FcStore.permissionResult(missing, emptySet())
         }
     }
 
@@ -95,19 +109,21 @@ class HelperActivity : ComponentActivity() {
         private const val REQ_PHOTO = 1
         private const val REQ_LUT = 2
 
-        /** Design N4 / N16: reading the camera frame back (see the class note). */
-        val PERMISSIONS = arrayOf(android.Manifest.permission.CAMERA, "com.picovr.permission.SPATIAL_DATA")
-
         fun launch(context: Context, mode: String) {
             context.startActivity(Intent(context, HelperActivity::class.java).putExtra(EXTRA_MODE, mode).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         }
 
-        /** 「去设置」: this app's page in system settings (permissions are one tap from there). */
+        /**
+         * 「去设置」: this app's own page in system settings. The permission list itself (MANAGE_APP_PERMISSIONS) needs
+         * GRANT_RUNTIME_PERMISSIONS, which apps cannot hold (PermissionController manifest, PICO OS 2026-11-18); on PICO OS
+         * the app's page opens on its permission list (headset log 2026-11-17: InstalledAppDetails → AppPermissionGroupsFragment).
+         */
         fun openAppSettings(context: Context) {
             val i = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             runCatching { context.startActivity(i) }.onFailure { FcLog.w("SETTINGS app page failed: $it") }
         }
 
-        fun granted(context: Context): Boolean = PERMISSIONS.all { context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
+        /** CAMERA and SPATIAL_DATA, each with its own checkSelfPermission (profile D58). */
+        fun missing(context: Context): Set<CamPerm> = CamPerm.missing { context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
     }
 }

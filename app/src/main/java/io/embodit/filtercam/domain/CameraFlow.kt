@@ -28,4 +28,18 @@ object CameraFlow {
 
     /** The main window resumed: open the viewfinder that [afterAnswer] left pending. */
     fun onResume(pending: Boolean, lensOpen: Boolean, onCameraPage: Boolean, inRoom: Boolean): Boolean = pending && !lensOpen && onCameraPage && !inRoom
+
+    enum class Complete { NONE, OPEN, REOPEN }
+
+    /**
+     * Profile D58 (2026-11-17 headset: the user turned the camera on in Settings and came back to no picture): the last
+     * missing permission turned on while away (Settings, the resume re-check). If the camera was wanted, the picture
+     * starts right there: open the viewfinder, or create its session again if it was made without the permission.
+     */
+    fun onPermissionsComplete(wasMissing: Boolean, nowComplete: Boolean, cameraWanted: Boolean, lensOpen: Boolean, onCameraPage: Boolean, inRoom: Boolean): Complete =
+        when {
+            !wasMissing || !nowComplete || !cameraWanted || !onCameraPage || inRoom -> Complete.NONE
+            lensOpen -> Complete.REOPEN
+            else -> Complete.OPEN
+        }
 }

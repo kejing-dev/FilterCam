@@ -6,6 +6,7 @@ import io.embodit.filtercam.app.FcStore
 import io.embodit.filtercam.app.Lang
 import io.embodit.filtercam.app.Pages
 import io.embodit.filtercam.app.Source
+import io.embodit.filtercam.domain.CamPerm
 import io.embodit.filtercam.domain.StampFormat
 import io.embodit.filtercam.platform.FcLog
 import io.embodit.filtercam.platform.LensController
@@ -86,10 +87,18 @@ object DebugCommands {
                 }
             "readback" -> {
                 FcStore.fakeReadback = a["mode"]?.takeIf { it != "off" } ?: arg?.takeIf { it != "off" }
-                if (FcStore.fakeReadback != null) FcStore.debugSet(s().copy(permissionGranted = false, permissionDenied = false), "debug readback ${FcStore.fakeReadback}")
+                if (FcStore.fakeReadback != null) FcStore.debugSet(s().copy(missingPerms = CamPerm.ALL, permissionDenied = false), "debug readback ${FcStore.fakeReadback}")
             }
             "permission" -> FcStore.permissionAllow()
             "notNow" -> FcStore.permissionNotNow()
+            // the camera permission card's buttons (D58), same calls as ShootPage.CameraPermission
+            "permCard" ->
+                when (arg) {
+                    "grant" -> FcStore.askCamera("preview button")
+                    "retry" -> FcStore.askCamera("ask again")
+                    "settings" -> FcStore.openPermissionSettings()
+                    else -> return false
+                }
             "save" -> FcStore.photos.failNext = a["fail"] ?: arg ?: "io"
             "import" -> if (a["fail"] != null) {
                 FcStore.failNextImport = true
@@ -157,7 +166,7 @@ object DebugCommands {
         fun camShutter(mode: String) {
             base()
             FcStore.fakeReadback = mode
-            FcStore.debugSet(s().copy(permissionGranted = false, permissionDenied = false), "debug fake camera $mode")
+            FcStore.debugSet(s().copy(missingPerms = CamPerm.ALL, permissionDenied = false), "debug fake camera $mode")
             FcStore.sourceSelected(Source.CAMERA)
         }
         when (id) {
@@ -193,12 +202,12 @@ object DebugCommands {
             }
             "S07" -> {
                 camShutter("ok")
-                FcStore.debugSet(s().copy(permissionGranted = false), "debug no permission")
+                FcStore.debugSet(s().copy(missingPerms = CamPerm.ALL), "debug no permission")
                 later(1500) { FcStore.shutterPressed("debug S07") }
             }
             "S07r" -> {
                 camShutter("sessionLevel")
-                FcStore.debugSet(s().copy(permissionGranted = false), "debug no permission")
+                FcStore.debugSet(s().copy(missingPerms = CamPerm.ALL), "debug no permission")
                 FcStore.hold("reopen")
                 later(1500) {
                     FcStore.shutterPressed("debug S07r")
@@ -207,7 +216,7 @@ object DebugCommands {
             }
             "S08" -> {
                 camShutter("ok")
-                FcStore.debugSet(s().copy(permissionGranted = true), "debug permission")
+                FcStore.debugSet(s().copy(missingPerms = emptySet()), "debug permission")
                 FcStore.hold("reading")
                 later(1500) { FcStore.shutterPressed("debug S08") }
             }
@@ -217,7 +226,7 @@ object DebugCommands {
             }
             "S08f" -> {
                 camShutter("fail")
-                FcStore.debugSet(s().copy(permissionGranted = true), "debug permission")
+                FcStore.debugSet(s().copy(missingPerms = emptySet()), "debug permission")
                 later(1500) { FcStore.shutterPressed("debug S08f") }
             }
             "S09" -> {

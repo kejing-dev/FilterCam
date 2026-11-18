@@ -80,6 +80,24 @@ Stop the Gradle daemons (`./gradlew.bat --stop`) before starting an emulator on 
   `source camera`, tap the system dialog (Don't allow ≈ 1340,783 / Allow ≈ 1592,783 on the 2560 frame).
 - Source: https://github.com/kejing-dev/FilterCam (private).
 
+## v0.1.5 notes: camera permissions one by one (profile D58)
+
+- 2026-11-17 headset: CAMERA was granted, `com.picovr.permission.SPATIAL_DATA` was refused with USER_FIXED, and the card
+  only said "camera access is off". Now `domain/CamPerms` checks CAMERA and SPATIAL_DATA each on its own
+  (`HelperActivity.missing`), the card and the viewfinder text name the missing one(s) with a status line per permission,
+  and only the missing ones are requested. A refusal with no rationale (including USER_FIXED, which the system refuses
+  without a dialog) is "blocked": the card says where to find it in Settings and offers only 「去设置」.
+- Settings names: "Spatial Data" in English (PermissionController `string/spatial_data`); a Chinese system says
+  「空间数据」, so the Chinese text names both.
+- 「去设置」 opens this app's App info page (one tap to Permissions). The permission list itself
+  (`MANAGE_APP_PERMISSIONS`) needs GRANT_RUNTIME_PERMISSIONS, which apps cannot hold.
+- Back from Settings (ON_RESUME, or the card's 1.5 s poll since Settings opens beside the window): once both are on and
+  the camera was wanted, the viewfinder opens right there (`CameraFlow.onPermissionsComplete`; an already open
+  viewfinder gets a new session). While a permission is missing the camera source stays picked, so the card stays.
+- Emulator test of the headset state: `pm grant … CAMERA`, `pm set-permission-flags … SPATIAL_DATA user-set user-fixed`,
+  then `source camera`. Card buttons: debug `permCard grant|retry|settings` (same calls as the buttons; adb taps do not
+  reach the spatial windows on this ROM).
+
 ## Debug broadcast (QA)
 
 `adb -s <dev> shell am broadcast -a io.embodit.filtercam.DEBUG -p io.embodit.filtercam --es cmd <name> [--es s <arg>] [extras]`
@@ -100,6 +118,7 @@ logs `CMD ok|fail <name>` under tag `FilterCam`; `state` logs `CMD reached <id>`
 | `card again\|ok\|delete\|deleteYes\|deleteNo\|redo\|retry` · `gallery --ei i 0` | shot card / gallery |
 | `lang zh\|en` · `mute [on\|off]` · `volume --ei n 0..2` · `guide reset\|ok` · `lut --es path <file>` | settings |
 | `save --es fail io` · `import --es fail bad` | S26 / S27 |
+| `permCard grant\|retry\|settings` | the camera permission card's buttons (D58) |
 | `seed --ei n 7` · `hold --es state countdown\|flash\|closing\|reopen\|reading` · `release` · `dump` · `quit` / `quit yes` | QA |
 
 Screenshot list: every state in `apps/filter-cam/build/ui-audit.md` §8. States with the viewfinder or the room overlays:

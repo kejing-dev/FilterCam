@@ -1,5 +1,7 @@
 package io.embodit.filtercam.app
 
+import io.embodit.filtercam.domain.CamPerm
+import io.embodit.filtercam.domain.CamPerms
 import io.embodit.filtercam.domain.StampFormat
 
 enum class Lang { ZH, EN }
@@ -106,14 +108,27 @@ data class FcState(
     val room: RoomUi? = null,
     val quitAsked: Boolean = false,
     val isEmulator: Boolean = false,
-    val permissionGranted: Boolean = false,
+    /** CAMERA / SPATIAL_DATA not granted, each checked on its own (profile D58). */
+    val missingPerms: Set<CamPerm> = CamPerm.ALL,
     val permissionDenied: Boolean = false,
-    /** Refused with "don't ask again": the dialog will not come back, only 「去设置」 helps. */
-    val permissionBlocked: Boolean = false,
+    /** Refused with "don't ask again" (or USER_FIXED): the dialog will not come back for these, only 「去设置」 helps. */
+    val blockedPerms: Set<CamPerm> = emptySet(),
     /** v1.1 card tapped: the card shakes (design S28). */
     val shakeId: String? = null,
     val shakeSerial: Int = 0,
 ) {
+    /** Both permissions of the camera picture are on. */
+    val permissionGranted: Boolean
+        get() = missingPerms.isEmpty()
+
+    /** Every missing permission is refused for good. */
+    val permissionBlocked: Boolean
+        get() = CamPerms.prompt(missingPerms, permissionDenied, blockedPerms)?.kind == CamPerms.Kind.BLOCKED
+
+    /** What the permission card says, or null when both are on. */
+    val permPrompt: CamPerms.Prompt?
+        get() = CamPerms.prompt(missingPerms, permissionDenied, blockedPerms)
+
     /** The filter the preview box shows: the looked-at card, else the chosen one. */
     val previewFilter: String
         get() = hoverId ?: filterId

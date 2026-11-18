@@ -57,6 +57,7 @@ import io.embodit.filtercam.app.FcStore
 import io.embodit.filtercam.app.NoticeKind
 import io.embodit.filtercam.app.Pages
 import io.embodit.filtercam.app.Source
+import io.embodit.filtercam.domain.CamPerms
 import io.embodit.filtercam.domain.FilterDef
 import io.embodit.filtercam.domain.Filters
 import io.embodit.filtercam.ui.theme.FcColors
@@ -123,15 +124,16 @@ private fun Preview(state: FcState, t: Txt, w: Dp, h: Dp) {
 }
 
 /**
- * Camera source without CAMERA (B19, 2026-11-14 headset): where the picture goes, say what is missing and offer the way
- * on: 「授权」 (the system dialog) before any answer; after a refusal 「去设置」 (the app's settings page) and, while the
- * system will still ask, 「再问一次」. Never a black box.
+ * Camera source without its permissions (B19, 2026-11-14 headset; D58, 2026-11-17): where the picture goes, name each
+ * missing permission (CAMERA and SPATIAL_DATA are checked on their own, with one status each) and offer the way on:
+ * 「授权」 (the system dialog) before any answer; after a refusal 「去设置」 (the app's settings page) and, while the
+ * system will still ask for one of them, 「再问一次」; refused for good, where to find it in Settings. Never a black box.
  */
 @Composable
 private fun CameraPermission(state: FcState, t: Txt, big: Boolean) {
     val keyH = if (big) 64.dp else 48.dp
     // Settings opens beside this window in Shared Space, so the window is not paused and gets no ON_RESUME on the way
-    // back: while this card shows, look again every 1.5 s and drop it once CAMERA is on
+    // back: while this card shows, look again every 1.5 s; once both are on the picture starts (FcStore.permissionRecheck)
     LaunchedEffect(Unit) {
         while (true) {
             delay(PERMISSION_POLL_MS)
@@ -141,21 +143,31 @@ private fun CameraPermission(state: FcState, t: Txt, big: Boolean) {
     Column(Modifier.fillMaxSize().padding(if (big) 32.dp else 14.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
         Icon(painter = painterResource(R.drawable.ic_camera), contentDescription = null, modifier = Modifier.size(if (big) 48.dp else 28.dp), tint = FcColors.OnPlate)
         Spacer(Modifier.height(if (big) 16.dp else 8.dp))
+        val prompt = state.permPrompt ?: return@Column
         FitText(
-            t(if (state.permissionDenied) R.string.cam_perm_denied else R.string.cam_perm_need),
+            FcStore.permText(prompt),
             where = "shoot/camPerm",
             style = if (big) FcType.body else FcType.small,
             color = FcColors.OnPlate,
             textAlign = TextAlign.Center,
-            maxLines = 3,
+            maxLines = 5,
+        )
+        Spacer(Modifier.height(if (big) 12.dp else 6.dp))
+        FitText(
+            FcStore.permStatus(state.missingPerms),
+            where = "shoot/camPermStatus",
+            style = FcType.small,
+            color = FcColors.OnPlate,
+            textAlign = TextAlign.Center,
+            maxLines = 2,
         )
         Spacer(Modifier.height(if (big) 20.dp else 10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            if (!state.permissionDenied) {
+            if (prompt.kind == CamPerms.Kind.NEED) {
                 PillButton(t(R.string.cam_perm_grant), "shoot/camPermGrant", accent = true, modifier = Modifier.height(keyH)) { FcStore.askCamera("preview button") }
             } else {
                 PillButton(t(R.string.cam_perm_settings), "shoot/camPermSettings", accent = true, modifier = Modifier.height(keyH)) { FcStore.openPermissionSettings() }
-                if (!state.permissionBlocked) PillButton(t(R.string.cam_perm_retry), "shoot/camPermRetry", onPlate = true, modifier = Modifier.height(keyH)) { FcStore.askCamera("ask again") }
+                if (prompt.canAskAgain) PillButton(t(R.string.cam_perm_retry), "shoot/camPermRetry", onPlate = true, modifier = Modifier.height(keyH)) { FcStore.askCamera("ask again") }
             }
         }
     }

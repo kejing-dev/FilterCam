@@ -6,6 +6,8 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import io.embodit.filtercam.domain.CamPerm
+import io.embodit.filtercam.domain.CamPerms
 import io.embodit.filtercam.domain.CameraFlow
 import io.embodit.filtercam.domain.CameraMasks
 import io.embodit.filtercam.domain.CubeError
@@ -141,10 +143,10 @@ object FcStore {
         val luts = renderer.importedLuts()
         var start = prefs.restore(FcState(isEmulator = isEmulator, luts = luts))
         if (Filters.of(start.filterId, luts)?.available != true) start = start.copy(filterId = Filters.F01.id)
-        val granted = HelperActivity.granted(context)
-        start = start.copy(permissionGranted = granted, permissionDenied = start.permissionDenied && !granted, permissionBlocked = start.permissionBlocked && !granted, overlay = if (prefs.guideSeen()) null else Overlay.GUIDE)
+        val missing = HelperActivity.missing(context)
+        start = start.copy(missingPerms = missing, permissionDenied = start.permissionDenied && missing.isNotEmpty(), blockedPerms = start.blockedPerms intersect missing, overlay = if (prefs.guideSeen()) null else Overlay.GUIDE)
         _state.value = start
-        FcLog.i("STATE ${start.stateId} init filter=${start.filterId} lang=${start.lang} emulator=$isEmulator luts=${luts.size}")
+        FcLog.i("STATE ${start.stateId} init filter=${start.filterId} lang=${start.lang} emulator=$isEmulator luts=${luts.size} missing=${missing.map { it.name }}")
         refreshPreview()
         renderer.buildThumbs(renderer.allFilters(), stampTextFor(StampFormat.SHORT))
     }
@@ -158,7 +160,7 @@ object FcStore {
         val visual =
             prev.previewFilter != next.previewFilter || prev.strength != next.strength || prev.stampOn != next.stampOn || prev.stampFormat != next.stampFormat ||
                 prev.compare != next.compare || prev.source != next.source || prev.sample != next.sample || prev.importName != next.importName ||
-                prev.lens.open != next.lens.open || prev.luts != next.luts || prev.permissionGranted != next.permissionGranted || prev.permissionDenied != next.permissionDenied
+                prev.lens.open != next.lens.open || prev.luts != next.luts || prev.missingPerms != next.missingPerms || prev.permissionDenied != next.permissionDenied || prev.blockedPerms != next.blockedPerms
         if (visual) refreshPreview()
     }
 
@@ -210,8 +212,10 @@ object FcStore {
             }
         }
         if (lensOpen && st.source == Source.CAMERA && !hovering) {
-            // the viewfinder says the same as the card on the page until CAMERA is on (QA #3 known issue: it said "no camera")
-            if (!st.permissionGranted) showTextInLens(t(if (st.permissionDenied) io.embodit.filtercam.R.string.cam_perm_denied else io.embodit.filtercam.R.string.cam_perm_need), "permission")
+            // the viewfinder says the same as the card on the page until both permissions are on (QA #3: it said "no
+            // camera"; D58: it said "camera" when SPATIAL_DATA was the one missing)
+            val prompt = st.permPrompt
+            if (prompt != null) showTextInLens(permText(prompt), "permission")
             else if (st.isEmulator) showNoCameraInLens()
             else scope.launch {
                 val m = withContext(Dispatchers.Default) { CameraMasks.of(lookOf(st, st.filterId, liveSeed), LensController.W, LensController.H) }
@@ -223,7 +227,50 @@ object FcStore {
     /** S22: the viewfinder shows the "no camera" line as a still picture (design: 应用上传的占位 640×480). */
     private fun showNoCameraInLens() = showTextInLens(t(io.embodit.filtercam.R.string.no_camera), "no camera")
 
-    /** One line of text on the viewfinder's panel (no camera on the emulator, CAMERA not granted). */
+    // ---- the camera permissions (profile D58): each named on its own
+
+    /** A permission's name as the app says it ([settings]: as PICO OS Settings lists it; the Chinese text names both 空间数据 and Spatial Data). */
+    fun permName(p: CamPerm, settings: Boolean = false): String =
+        when (p) {
+            CamPerm.CAMERA -> t(io.embodit.filtercam.R.string.perm_camera)
+            CamPerm.SPATIAL_DATA -> t(if (settings) io.embodit.filtercam.R.string.perm_spatial_settings else io.embodit.filtercam.R.string.perm_spatial)
+        }
+
+    private fun permNames(ps: List<CamPerm>, settings: Boolean = false): String = ps.joinToString(t(io.embodit.filtercam.R.string.perm_and)) { permName(it, settings) }
+
+    /** The card's sentence: which permission is missing, and for one refused for good, where it is in Settings. */
+    fun permText(p: CamPerms.Prompt): String {
+        val main =
+            when (p.kind) {
+                CamPerms.Kind.NEED -> t(io.embodit.filtercam.R.string.cam_perm_need, permNames(p.missing))
+                CamPerms.Kind.DENIED -> t(io.embodit.filtercam.R.string.cam_perm_denied, permNames(p.askable))
+                CamPerms.Kind.BLOCKED -> t(io.embodit.filtercam.R.string.cam_perm_blocked, permNames(p.missing))
+            }
+        val where = if (p.blocked.isNotEmpty()) "\n" + t(io.embodit.filtercam.R.string.cam_perm_where, permNames(p.blocked, settings = true)) else ""
+        return main + where
+    }
+
+    /** One status per permission, e.g. 「相机：已开 · 空间数据：没开」. */
+    fun permStatus(missing: Set<CamPerm>): String =
+        CamPerm.values().joinToString("  ·  ") { t(if (it in missing) io.embodit.filtercam.R.string.perm_off else io.embodit.filtercam.R.string.perm_on, permName(it)) }
+
+    /** Lines that fit [maxW]: kept paragraphs, broken at spaces (English) or anywhere (Chinese). */
+    private fun wrapLines(text: String, maxW: Float, width: (String) -> Float): List<String> =
+        text.split('\n').flatMap { para ->
+            val out = mutableListOf<String>()
+            var line = ""
+            val tokens = Regex("""\S+\s*|\s+""").findAll(para).map { it.value }.flatMap { tok -> if (tok.any { it.code > 0x2E80 }) tok.map { it.toString() } else listOf(tok) }
+            for (tok in tokens) {
+                if (line.isNotEmpty() && width((line + tok).trimEnd()) > maxW) {
+                    out += line.trimEnd()
+                    line = tok.trimStart()
+                } else line += tok
+            }
+            if (line.isNotBlank()) out += line.trimEnd()
+            out
+        }
+
+    /** One line of text on the viewfinder's panel (no camera on the emulator, the camera permissions missing). */
     private fun showTextInLens(text: String, what: String) {
         val ctx = appContext ?: return
         scope.launch {
@@ -233,7 +280,7 @@ object FcStore {
                     val c = android.graphics.Canvas(bmp)
                     c.drawColor(0xFF101216.toInt())
                     val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFF2F4F7.toInt(); textSize = 26f; textAlign = android.graphics.Paint.Align.CENTER }
-                    val words = text.chunked(22)
+                    val words = wrapLines(text, LensController.W - 80f) { paint.measureText(it) }
                     words.forEachIndexed { i, line -> c.drawText(line, LensController.W / 2f, LensController.H / 2f + (i - words.size / 2f) * 36f + 10f, paint) }
                     Bitmaps.rgbBytes(Bitmaps.toImg(bmp), LensController.W, LensController.H)
                 }
@@ -310,11 +357,15 @@ object FcStore {
     /** [auto]: the start-up camera on the headset; it asks only if the user has never refused (no dialog on every start). */
     fun sourceSelected(src: Source, auto: Boolean = false) {
         when (src) {
-            Source.SAMPLE -> set(s.copy(source = Source.SAMPLE, notice = null), "source sample")
+            Source.SAMPLE -> {
+                cameraWanted = false
+                set(s.copy(source = Source.SAMPLE, notice = null), "source sample")
+            }
             Source.CAMERA -> {
+                cameraWanted = true
                 set(s.copy(source = Source.CAMERA, notice = null), "source camera")
                 // ask before the camera is used (2026-11-14 headset: the app never asked); the shutter's read-back needs it
-                val ask = !cameraGranted() && !s.permissionBlocked && !(auto && s.permissionDenied)
+                val ask = missingNow().isNotEmpty() && !s.permissionBlocked && !(auto && s.permissionDenied)
                 // QA #4 q4-1: a session created while the dialog is up (the spot window never gets focus) lands in the middle
                 // of the main window and stays there; so with a dialog coming the viewfinder opens after the answer instead
                 // (CameraFlow.afterAnswer, once the window is back in front and the spot can take focus)
@@ -322,6 +373,7 @@ object FcStore {
                 if (ask) askCamera(if (auto) "camera source (start)" else "camera source")
             }
             Source.IMPORT -> {
+                cameraWanted = false
                 if (importImg != null && s.importName != null) set(s.copy(source = Source.IMPORT, notice = null), "source import (kept)")
                 pickPhoto()
             }
@@ -382,7 +434,11 @@ object FcStore {
     // the viewfinder (T3, S02 / S21 / S22 / S25)
     // =========================================================================================
 
-    fun lensButton() = if (s.lens.open) closeLens("button", toSample = true) else openLens("button")
+    fun lensButton() =
+        if (s.lens.open) {
+            cameraWanted = false
+            closeLens("button", toSample = true)
+        } else openLens("button")
 
     fun openLens(why: String) {
         if (s.lens.open || s.room != null) return
@@ -431,7 +487,9 @@ object FcStore {
         lensWaitingForSpot = false
         lensHost?.close()
         windowHost?.closeSpot()
-        val wasCamera = s.source == Source.CAMERA
+        // D58: while a permission is missing the camera stays picked, so the card keeps naming it and the picture starts
+        // once it is on (closed by its own button: back to the sample as before)
+        val wasCamera = s.source == Source.CAMERA && !(cameraWanted && !s.permissionGranted)
         val n = if (wasCamera && toSample) notice(kind) else if (kind != NoticeKind.LENS_CLOSED_SAMPLE) notice(kind) else s.notice
         set(s.copy(lens = LensUi(), source = if (wasCamera) Source.SAMPLE else s.source, notice = n), "lens closed ($why)")
     }
@@ -446,7 +504,8 @@ object FcStore {
         lensWaitingForSpot = false
         lensHost?.close()
         windowHost?.closeSpot()
-        set(s.copy(lens = LensUi(), lensError = reason, source = if (s.source == Source.CAMERA) Source.SAMPLE else s.source), "lens failed")
+        val keepCamera = cameraWanted && !s.permissionGranted
+        set(s.copy(lens = LensUi(), lensError = reason, source = if (s.source == Source.CAMERA && !keepCamera) Source.SAMPLE else s.source), "lens failed")
     }
 
     fun lensErrorOk() = set(s.copy(lensError = null), "lens error ok")
@@ -558,7 +617,7 @@ object FcStore {
     fun permissionAllow() {
         set(s.copy(overlay = null), "permission allow")
         val fake = fakeReadback
-        if (fake != null) return permissionResult(fake != "denied")
+        if (fake != null) return permissionResult(if (fake == "denied") CamPerm.ALL else emptySet(), emptySet())
         permissionFor = "shutter"
         val ctx = appContext ?: return
         askingCamera = true
@@ -568,11 +627,15 @@ object FcStore {
     /** What the pending CAMERA request is for: "shutter" (S07, read back after it) or "source" (camera picked, nothing after). */
     private var permissionFor: String? = null
 
-    private fun cameraGranted(): Boolean = appContext?.let { HelperActivity.granted(it) } ?: s.permissionGranted
+    /** CAMERA and SPATIAL_DATA, each checked on its own now (profile D58). */
+    private fun missingNow(): Set<CamPerm> = appContext?.let { HelperActivity.missing(it) } ?: s.missingPerms
 
-    /** The system CAMERA dialog for the camera source (「授权」 / 「再问一次」 on the preview go here too). */
+    /** The camera was picked (by the user, or at start on the headset) and not put away: start it once permissions allow. */
+    private var cameraWanted = false
+
+    /** The system dialog for the missing permissions (「授权」 / 「再问一次」 on the preview go here too). */
     fun askCamera(why: String) {
-        if (cameraGranted()) return permissionRecheck("ask: already granted")
+        if (missingNow().isEmpty()) return permissionRecheck("ask: already granted")
         permissionFor = "source"
         FcLog.i("PERMISSION ask ($why)")
         val ctx = appContext ?: return
@@ -586,30 +649,51 @@ object FcStore {
         appContext?.let { HelperActivity.openAppSettings(it) }
     }
 
-    /** The main window resumed (maybe back from Settings): pick up a permission granted or taken away there. */
+    /**
+     * The main window resumed (maybe back from Settings), or the card's poll: pick up each permission granted or taken
+     * away there. Both on and the camera wanted: the picture starts right here, no restart (profile D58).
+     */
     fun permissionRecheck(why: String) {
-        val now = cameraGranted()
-        if (now == s.permissionGranted) return
-        set(s.copy(permissionGranted = now, permissionDenied = if (now) false else s.permissionDenied, permissionBlocked = if (now) false else s.permissionBlocked), "permission recheck $now ($why)")
+        val now = missingNow()
+        if (now == s.missingPerms) return
+        val wasMissing = s.missingPerms.isNotEmpty()
+        set(s.copy(missingPerms = now, permissionDenied = s.permissionDenied && now.isNotEmpty(), blockedPerms = s.blockedPerms intersect now), "permission recheck missing=${now.map { it.name }} ($why)")
+        permissionsMaybeComplete(wasMissing, why)
+    }
+
+    private fun permissionsMaybeComplete(wasMissing: Boolean, why: String) {
+        val st = s
+        val action = CameraFlow.onPermissionsComplete(wasMissing, st.permissionGranted, cameraWanted, st.lens.open, st.page == Pages.SHOOT, st.room != null)
+        if (action == CameraFlow.Complete.NONE) return
+        if (st.source != Source.CAMERA) set(s.copy(source = Source.CAMERA, notice = null), "source camera (permissions on)")
+        if (action == CameraFlow.Complete.OPEN) return openLens("permissions on ($why)")
+        // the session was made without the permission: make it again so the camera frames come through (design N16, S07r)
+        set(s.copy(lens = s.lens.copy(reopening = true, live = false)), "lens reopen (permissions on, $why)")
+        lensHost?.close()
+        main.postDelayed({ if (s.lens.open) lensHost?.open() }, REOPEN_GAP_MS)
     }
 
     fun permissionNotNow() = set(s.copy(overlay = null, permissionDenied = true, card = ShotCard(CardKind.VIEW_ONLY, filterId = s.filterId, serial = ++cardSerial)), "permission not now")
 
-    fun permissionResult(granted: Boolean, canAskAgain: Boolean = true) {
+    /** The dialog answered: [missing] is what is still off, [blocked] the ones refused for good (USER_FIXED included). */
+    fun permissionResult(missing: Set<CamPerm>, blocked: Set<CamPerm>) {
         val forSource = permissionFor == "source"
         permissionFor = null
         askingCamera = false
+        val granted = missing.isEmpty()
+        val nextBlocked = (s.blockedPerms + blocked) intersect missing
+        val names = "missing=${missing.map { it.name }} blocked=${nextBlocked.map { it.name }}"
         if (forSource) {
-            // camera picked: nothing to read back yet, only remember the answer (the preview shows 授权 / 去设置 until granted)
-            set(s.copy(permissionGranted = granted, permissionDenied = !granted, permissionBlocked = !granted && !canAskAgain), "permission ${if (granted) "granted" else "denied"} (camera source)")
+            // camera picked: nothing to read back yet, only remember the answer (the preview names what is still off)
+            set(s.copy(missingPerms = missing, permissionDenied = !granted, blockedPerms = nextBlocked), "permission ${if (granted) "granted" else "denied"} (camera source) $names")
             reopenAfterAnswer()
             return
         }
         if (!granted) {
-            set(s.copy(permissionDenied = true, permissionBlocked = !canAskAgain, card = ShotCard(CardKind.VIEW_ONLY, filterId = s.filterId, serial = ++cardSerial)), "permission denied")
+            set(s.copy(missingPerms = missing, permissionDenied = true, blockedPerms = nextBlocked, card = ShotCard(CardKind.VIEW_ONLY, filterId = s.filterId, serial = ++cardSerial)), "permission denied $names")
             return
         }
-        set(s.copy(permissionGranted = true, permissionDenied = false, permissionBlocked = false), "permission granted")
+        set(s.copy(missingPerms = emptySet(), permissionDenied = false, blockedPerms = emptySet()), "permission granted")
         // design N16: if the permission only counts for sessions created after it, destroy and create again (S07r)
         if (fakeReadback == "sessionLevel" || (!s.isEmulator && SESSION_LEVEL_PERMISSION)) reopenThenRead() else readBack()
     }
@@ -667,10 +751,8 @@ object FcStore {
     fun cardGrant() {
         val ctx = appContext ?: return
         set(s.copy(card = null), "card grant")
-        if (fakeReadback != null) return permissionResult(true)
-        runCatching {
-            ctx.startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + ctx.packageName)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-        }.onFailure { FcLog.w("SETTINGS open: $it") }
+        if (fakeReadback != null) return permissionResult(emptySet(), emptySet())
+        HelperActivity.openAppSettings(ctx)
     }
 
     fun cardDeleteAsk(on: Boolean) = s.card?.let { set(s.copy(card = it.copy(deleteAsked = on)), "delete ask $on") }
@@ -788,8 +870,9 @@ object FcStore {
     private fun autoLens(why: String) {
         main.postDelayed({
             if (s.page != Pages.SHOOT || s.overlay != null || s.room != null || s.lens.open || s.lensError != null) return@postDelayed
-            // design entryFlow: on the headset the viewfinder opens on the camera (asking for CAMERA first), on the emulator on the sample
-            if (!s.isEmulator && !s.permissionBlocked && s.source == Source.SAMPLE) sourceSelected(Source.CAMERA, auto = true) else openLens("auto ($why)")
+            // design entryFlow: on the headset the viewfinder opens on the camera (asking for the missing permissions first), on
+            // the emulator on the sample. Refused for good: still the camera, so the card names what is off (D58); no dialog.
+            if (!s.isEmulator && s.source == Source.SAMPLE) sourceSelected(Source.CAMERA, auto = true) else openLens("auto ($why)")
         }, AUTO_LENS_MS)
     }
 
@@ -1016,7 +1099,7 @@ object FcStore {
         val st = s
         return "DUMP state=${st.stateId} page=${st.page} source=${st.source.id} sample=${st.sample} import=${st.importName} filter=${st.filterId} hover=${st.hoverId} strength=${st.strength} " +
             "stamp=${st.stampOn}/${st.stampFormat.id} compare=${st.compare} timer=${st.timerOn} lens=${st.lens} lensError=${st.lensError} card=${st.card?.kind}/${st.card?.uri} " +
-            "room=${st.room} muted=${st.muted} vol=${st.volume} lang=${st.lang} luts=${st.luts} permission=${st.permissionGranted}/${st.permissionDenied} fake=$fakeReadback held=$held last=${st.lastShotUri}"
+            "room=${st.room} muted=${st.muted} vol=${st.volume} lang=${st.lang} luts=${st.luts} permission=missing${st.missingPerms.map { it.name }}/denied=${st.permissionDenied}/blocked${st.blockedPerms.map { it.name }} fake=$fakeReadback held=$held last=${st.lastShotUri}"
     }
 
     private const val FLASH_MS = 800L
@@ -1031,4 +1114,5 @@ object FcStore {
 
     /** Design N16, unknown until the headset spike: assume the permission is checked at read-back time. */
     private const val SESSION_LEVEL_PERMISSION = false
+    private const val REOPEN_GAP_MS = 600L
 }
