@@ -159,7 +159,7 @@
     <string name="cam_perm_where">Tap Open Settings, find %1$s under Permissions and choose Allow.</string>
     <string name="perm_camera">Camera</string>
     <string name="perm_spatial">Spatial Data</string>
-    <string name="perm_spatial_settings">Spatial Data</string>
+    <string name="perm_spatial_settings">Spatial Data (may be listed as com.picovr.permission.SPATIAL_DATA)</string>
     <string name="perm_and">" and "</string>
     <string name="perm_on">%1$s: on</string>
     <string name="perm_off">%1$s: off</string>

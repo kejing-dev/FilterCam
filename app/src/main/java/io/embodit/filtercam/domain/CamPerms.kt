@@ -6,8 +6,8 @@ package io.embodit.filtercam.domain
  * on its own, the missing one is named, and a refused-for-good one says where to find it in Settings.
  *
  * Settings names: "Spatial Data" in English (PermissionController `string/spatial_data` on the 6.1 oversea emulator image,
- * 2026-11-18; the headset's dialog said "Access Spatial Data"); a Chinese 6.3 system asks for 「空间数据」, so the Chinese
- * text names both.
+ * 2026-11-18; the headset's dialog said "Access Spatial Data"); a Chinese 6.3 system asks for 「空间数据」; and the app's
+ * permission list in Settings shows the raw id `com.picovr.permission.SPATIAL_DATA` (6.1 emulator). The hint names all.
  */
 enum class CamPerm(val id: String) {
     CAMERA("android.permission.CAMERA"),

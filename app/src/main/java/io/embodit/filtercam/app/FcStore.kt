@@ -160,7 +160,7 @@ object FcStore {
         val visual =
             prev.previewFilter != next.previewFilter || prev.strength != next.strength || prev.stampOn != next.stampOn || prev.stampFormat != next.stampFormat ||
                 prev.compare != next.compare || prev.source != next.source || prev.sample != next.sample || prev.importName != next.importName ||
-                prev.lens.open != next.lens.open || prev.luts != next.luts || prev.missingPerms != next.missingPerms || prev.permissionDenied != next.permissionDenied || prev.blockedPerms != next.blockedPerms
+                prev.lens.open != next.lens.open || prev.luts != next.luts || prev.missingPerms != next.missingPerms || prev.permissionDenied != next.permissionDenied || prev.blockedPerms != next.blockedPerms || prev.lang != next.lang
         if (visual) refreshPreview()
     }
 

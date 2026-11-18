@@ -159,7 +159,7 @@
     <string name="cam_perm_where">点「去设置」，在「权限」里找「%1$s」，选允许。</string>
     <string name="perm_camera">相机</string>
     <string name="perm_spatial">空间数据</string>
-    <string name="perm_spatial_settings">空间数据（英文系统叫 Spatial Data）</string>
+    <string name="perm_spatial_settings">空间数据（也可能显示为 Spatial Data 或 com.picovr.permission.SPATIAL_DATA）</string>
     <string name="perm_and">和</string>
     <string name="perm_on">%1$s：已开</string>
     <string name="perm_off">%1$s：没开</string>
