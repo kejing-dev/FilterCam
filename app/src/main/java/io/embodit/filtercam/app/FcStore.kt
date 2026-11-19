@@ -77,6 +77,9 @@ object FcStore {
 
         /** 「叫回面前」: the camera window again where the system opens a new one (in front of the head), this one closed. */
         fun recallFront()
+
+        /** Quit: W2 and this window closed (an open window container keeps an empty task in recents). */
+        fun closeAll()
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -893,13 +896,15 @@ object FcStore {
     fun quitConfirmed() {
         FcLog.i("QUIT confirmed")
         stopLens()
-        windowHost?.closeSide()
         stageCloser?.invoke()
-        val ctx = appContext
-        val tasks = ctx?.getSystemService(android.app.ActivityManager::class.java)?.appTasks.orEmpty()
-        tasks.forEach { t -> runCatching { t.finishAndRemoveTask() }.onFailure { FcLog.w("QUIT finishAndRemoveTask: $it") } }
-        FcLog.i("QUIT removed ${tasks.size} task(s), process ends")
+        recalling = true // the windows' ON_STOP / ON_DESTROY below are the quit, not the user leaving
+        windowHost?.closeAll()
         sounds?.release()
+        main.postDelayed({
+            val tasks = appContext?.getSystemService(android.app.ActivityManager::class.java)?.appTasks.orEmpty()
+            tasks.forEach { t -> runCatching { t.finishAndRemoveTask() }.onFailure { FcLog.w("QUIT finishAndRemoveTask: $it") } }
+            FcLog.i("QUIT removed ${tasks.size} task(s), process ends")
+        }, QUIT_CLOSE_MS)
         main.postDelayed({
             android.os.Process.killProcess(android.os.Process.myPid())
             kotlin.system.exitProcess(0)
@@ -953,7 +958,8 @@ object FcStore {
 
     private const val FLASH_MS = 120L
     private const val FREEZE_MS = 300L
-    private const val QUIT_EXIT_DELAY_MS = 600L
+    private const val QUIT_CLOSE_MS = 300L
+    private const val QUIT_EXIT_DELAY_MS = 900L
     private const val GATE_WATCHDOG_MS = 3_000L
     private const val GATE_NO_FRAMES_FIRST_MS = 15_000L
     private const val RECALL_CLOSE_MS = 400L

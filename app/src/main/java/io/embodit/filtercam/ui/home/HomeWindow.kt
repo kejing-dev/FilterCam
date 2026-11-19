@@ -142,6 +142,11 @@ private fun WindowBridge(windowId: String, windowTag: String?) {
                     scope.launch(Dispatchers.Main.immediate) { runCatching { navigator.closeStage() }.onFailure { FcLog.w("STAGE close failed: $it") } }
                 }
 
+                override fun closeAll() {
+                    closeSide()
+                    runCatching { navigator.closeWindowContainer() }.onFailure { FcLog.w("QUIT close window: $it") }
+                }
+
                 override fun recallFront() {
                     // a new instance (new tag) of the same camera window, placed where the system opens new windows; then this one goes
                     val tag = "home${SystemClock.elapsedRealtime() % 1_000_000}"
