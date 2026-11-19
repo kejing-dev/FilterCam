@@ -112,27 +112,6 @@ class LutAndRulesTest {
         assertNull(Stamp.text(StampFormat.OFF, 2026, 11, 4))
     }
 
-    @Test
-    fun cameraMasksAreIdentityAtStrengthZeroAndForCompare() {
-        val def = Filters.F01
-        val lut = CubeParser.parse(File("src/main/assets/luts/gold200.cube").readText())
-        for (look in listOf(Look(def, lut, 0f, 1, null), Look(def, lut, 1f, 1, null, compare = true))) {
-            val m = CameraMasks.of(look, 64, 48)
-            assertTrue(m.keep.all { abs(it - 1f) < 1e-5f })
-            assertTrue(m.greyW.all { abs(it) < 1e-5f })
-            assertTrue(m.add.all { abs(it) < 1e-3f })
-        }
-    }
-
-    @Test
-    fun cameraMasksForBlackAndWhiteUseOnlyGrey() {
-        val lut = CubeParser.parse(File("src/main/assets/luts/trix.cube").readText())
-        val m = CameraMasks.of(Look(Filters.F05, lut, 1f, 1, null), 64, 48)
-        val centre = (24 * 64 + 32) * 3
-        for (c in 0 until 3) assertEquals(0f, m.keep[centre + c], 1e-4f)
-        assertTrue(m.greyW[centre] > 0.5f)
-    }
-
     // ---- P5 placement (profile D9 / D10 / D29)
 
     private fun head(pitchDeg: Float, yawDeg: Float = 0f, rollDeg: Float = 0f, at: Vec3 = Vec3(0.3f, 1.6f, -0.2f)): HeadPose {

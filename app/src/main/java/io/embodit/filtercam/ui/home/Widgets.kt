@@ -1,14 +1,9 @@
 package io.embodit.filtercam.ui.home
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -49,14 +44,14 @@ fun PillButton(label: String, where: String, icon: Int? = null, enabled: Boolean
  * high (profile D44); selected = accent fill with dark text (design M6).
  */
 @Composable
-fun <T> Options(items: List<Pair<T, String>>, selected: T, itemWidth: Dp, where: String, onPick: (T) -> Unit) {
+fun <T> Options(items: List<Pair<T, String>>, selected: T, itemWidth: Dp, where: String, textStyle: androidx.compose.ui.text.TextStyle? = null, onPick: (T) -> Unit) {
     SegmentControl(modifier = Modifier.width(itemWidth * items.size + 8.dp).height(52.dp), backgroundColor = PicoTheme.colorScheme.fillTertiary) {
         items.forEach { (v, label) ->
             SegmentItem(
                 selected = selected == v,
                 onClick = { onPick(v) },
                 modifier = Modifier.width(itemWidth).height(48.dp),
-                textStyle = PicoTheme.typography.labelLarge,
+                textStyle = textStyle ?: PicoTheme.typography.labelLarge,
                 colors =
                     SegmentControlDefaults.colors(
                         itemBackgroundColor = Color.Transparent,
@@ -67,19 +62,5 @@ fun <T> Options(items: List<Pair<T, String>>, selected: T, itemWidth: Dp, where:
                 title = { FitText(text = label, where = where, maxLines = 1, softWrap = false) },
             )
         }
-    }
-}
-
-/** A card drawn over the page inside the window (design P6 / S21); opaque so it reads over any page. */
-@Composable
-fun OverlayCard(modifier: Modifier, width: Dp, content: @Composable () -> Unit) {
-    Box(
-        modifier
-            .width(width)
-            .background(FcColors.Plate, RoundedCornerShape(24.dp))
-            .border(1.dp, PicoTheme.colorScheme.fillSecondary, RoundedCornerShape(24.dp))
-            .padding(24.dp)
-    ) {
-        content()
     }
 }

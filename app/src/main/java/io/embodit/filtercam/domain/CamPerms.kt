@@ -10,8 +10,9 @@ package io.embodit.filtercam.domain
  * permission list in Settings shows the raw id `com.picovr.permission.SPATIAL_DATA` (6.1 emulator). The hint names all.
  */
 enum class CamPerm(val id: String) {
-    CAMERA("android.permission.CAMERA"),
+    // design r4 (2026-11-18 headset): Spatial Data first, it is the one that keeps the picture black; asked in this order
     SPATIAL_DATA("com.picovr.permission.SPATIAL_DATA"),
+    CAMERA("android.permission.CAMERA"),
     ;
 
     companion object {
@@ -45,7 +46,7 @@ object CamPerms {
             get() = missing - blocked.toSet()
     }
 
-    /** Null when both are granted. Order is fixed (camera first) so the text does not jump around. */
+    /** Null when both are granted. Order is fixed (Spatial Data first, design r4) so the text does not jump around. */
     fun prompt(missing: Set<CamPerm>, denied: Boolean, blocked: Set<CamPerm>): Prompt? {
         if (missing.isEmpty()) return null
         val m = CamPerm.values().filter { it in missing }

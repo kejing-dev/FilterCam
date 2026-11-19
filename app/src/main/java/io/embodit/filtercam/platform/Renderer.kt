@@ -19,14 +19,36 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+/** A live camera frame as the viewfinder shows it: the raw read-back frame and that frame through the filter. */
+class LiveFrame(val raw: Img, val shown: Bitmap, val seq: Long)
+
 /**
- * Runs [FilterEngine] off the main thread for the preview box, the card thumbnails and the viewfinder's photo frame,
- * and owns the LUTs (built-in .cube assets and imported ones in filesDir/luts, design persistence.luts) and the
- * sample photos. One worker for the live preview (only the newest request runs), one for thumbnails.
+ * Runs [FilterEngine] off the main thread for the viewfinder (photo sources and, v0.2.0, the read-back camera frames),
+ * the filter cards and the shutter, and owns the LUTs (built-in .cube assets and imported ones in filesDir/luts, design
+ * persistence.luts) and the sample photos. One worker for photo previews (only the newest request runs), three for camera
+ * frames (frame n+1 renders while n is still running; an older frame never replaces a newer one), one for thumbnails.
  */
 class Renderer(private val context: Context) {
     private val previewExec = Executors.newSingleThreadExecutor { Thread(it, "fc-preview").apply { isDaemon = true } }
     private val thumbExec = Executors.newSingleThreadExecutor { Thread(it, "fc-thumbs").apply { isDaemon = true } }
+    private val liveExec = Executors.newFixedThreadPool(LIVE_WORKERS) { Thread(it, "fc-live").apply { isDaemon = true } }
+    private val liveBusy = AtomicInteger()
+    @Volatile private var liveShownSeq = 0L
+    private var liveSeqNext = 0L
+    private var liveCount = 0
+    private var liveMsSum = 0L
+    private var liveAt = SystemClock.elapsedRealtime()
+
+    private val _live = MutableStateFlow<LiveFrame?>(null)
+    val live: StateFlow<LiveFrame?> = _live.asStateFlow()
+
+    /** Camera frames shown per second and the mean render time over the last 5 s (dump, ui-audit: design N23). */
+    @Volatile var liveHz = 0f
+        private set
+    @Volatile var liveRenderMs = 0f
+        private set
+    @Volatile var liveDropped = 0
+        private set
     private val previewGen = AtomicInteger()
     private val luts = ConcurrentHashMap<String, Lut3D>()
     private val samples = ConcurrentHashMap<String, Img>()
@@ -93,7 +115,7 @@ class Renderer(private val context: Context) {
      * Renders [src] with [look] at the preview size and publishes the bitmap; [onFrame] gets the filtered picture (for
      * the viewfinder's photo tensor). Only the newest request runs.
      */
-    fun requestPreview(src: () -> Img?, look: () -> Look?, onFrame: (Img) -> Unit) {
+    fun requestPreview(src: () -> Img?, look: () -> Look?, onFrame: (Img) -> Unit = {}) {
         val gen = previewGen.incrementAndGet()
         previewExec.execute {
             if (gen != previewGen.get()) return@execute
@@ -116,7 +138,62 @@ class Renderer(private val context: Context) {
         }
     }
 
-    /** Card thumbnails (design P1 strip / P7 cards): the filter's own sample photo through it, 320 x 240. */
+    /**
+     * A read-back camera frame (640 x 480 RGB) through [look], for the viewfinder. Dropped while all workers are busy
+     * (the next frame is a few tens of ms away); a frame finishing after a newer one is not shown.
+     */
+    fun renderLive(rgb: ByteArray, w: Int, h: Int, look: Look) {
+        if (liveBusy.get() >= LIVE_WORKERS) {
+            liveDropped++
+            return
+        }
+        liveBusy.incrementAndGet()
+        val seq = synchronized(this) { ++liveSeqNext }
+        liveExec.execute {
+            try {
+                val t0 = SystemClock.elapsedRealtime()
+                val raw = Bitmaps.fromRgb(rgb, w, h)
+                val img = runCatching { FilterEngine.render(raw, look) }.getOrElse {
+                    FcLog.e("RENDER live failed: $it", it)
+                    return@execute
+                }
+                val bmp = Bitmaps.toBitmap(img)
+                val ms = SystemClock.elapsedRealtime() - t0
+                synchronized(this) {
+                    if (seq <= liveShownSeq) return@execute
+                    liveShownSeq = seq
+                    _live.value = LiveFrame(raw, bmp, seq)
+                    liveCount++
+                    liveMsSum += ms
+                    val now = SystemClock.elapsedRealtime()
+                    if (now - liveAt >= 5_000) {
+                        liveHz = liveCount * 1000f / (now - liveAt)
+                        liveRenderMs = liveMsSum.toFloat() / liveCount
+                        FcLog.i("VIEWFINDER ${"%.1f".format(liveHz)} Hz shown, render ${"%.0f".format(liveRenderMs)} ms, dropped $liveDropped")
+                        liveCount = 0
+                        liveMsSum = 0
+                        liveDropped = 0
+                        liveAt = now
+                    }
+                }
+            } finally {
+                liveBusy.decrementAndGet()
+            }
+        }
+    }
+
+    /** The camera stopped: no stale frame on the next start. */
+    fun clearLive() {
+        synchronized(this) {
+            _live.value = null
+            liveHz = 0f
+            liveCount = 0
+            liveMsSum = 0
+            liveAt = SystemClock.elapsedRealtime()
+        }
+    }
+
+    /** Card thumbnails (design W2 cards): the filter's own sample photo through it, 320 x 240. */
     fun buildThumbs(defs: List<FilterDef>, stampText: String?) {
         thumbExec.execute {
             val t0 = SystemClock.elapsedRealtime()
@@ -141,5 +218,6 @@ class Renderer(private val context: Context) {
         const val PREVIEW_W = 640
         const val THUMB_W = 320
         const val THUMB_SEED = 7
+        private const val LIVE_WORKERS = 3
     }
 }

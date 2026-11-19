@@ -1,7 +1,6 @@
 package io.embodit.filtercam.domain
 
 import io.embodit.filtercam.domain.CamPerms.Kind
-import io.embodit.filtercam.domain.CameraFlow.Complete
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -36,7 +35,7 @@ class CamPermsTest {
         val onlyCamera = CamPerms.prompt(setOf(CamPerm.CAMERA), denied = false, blocked = emptySet())!!
         assertEquals(listOf(CamPerm.CAMERA), onlyCamera.missing)
         // both: camera first, always the same order
-        assertEquals(listOf(CamPerm.CAMERA, CamPerm.SPATIAL_DATA), CamPerms.prompt(setOf(CamPerm.SPATIAL_DATA, CamPerm.CAMERA), false, emptySet())!!.missing)
+        assertEquals(listOf(CamPerm.SPATIAL_DATA, CamPerm.CAMERA), CamPerms.prompt(setOf(CamPerm.SPATIAL_DATA, CamPerm.CAMERA), false, emptySet())!!.missing)
     }
 
     /** The headset state of 2026-11-17 (apps/filter-cam/qa/headset-perm-2026-11-17.txt). */
@@ -78,45 +77,21 @@ class CamPermsTest {
         assertEquals(emptySet<CamPerm>(), CamPerms.blockedAfterAnswer(CamPerm.ALL, emptySet()) { false })
     }
 
-    // ---- the picture starts on resume once both are on (D58 item 3)
+    // ---- the picture starts on resume once both are on (D58 item 3, design r4 S00c)
 
-    @Test
-    fun lastPermissionOnInSettingsOpensTheViewfinderOnResume() {
-        assertEquals(Complete.OPEN, CameraFlow.onPermissionsComplete(wasMissing = true, nowComplete = true, cameraWanted = true, lensOpen = false, onCameraPage = true, inRoom = false))
-    }
-
-    @Test
-    fun viewfinderOpenWithoutThePermissionGetsANewSession() {
-        assertEquals(Complete.REOPEN, CameraFlow.onPermissionsComplete(true, true, cameraWanted = true, lensOpen = true, onCameraPage = true, inRoom = false))
-    }
-
-    @Test
-    fun nothingStartsWhenStillMissingNotWantedElsewhereOrAlreadyOn() {
-        assertEquals(Complete.NONE, CameraFlow.onPermissionsComplete(true, nowComplete = false, cameraWanted = true, lensOpen = false, onCameraPage = true, inRoom = false))
-        assertEquals(Complete.NONE, CameraFlow.onPermissionsComplete(true, true, cameraWanted = false, lensOpen = false, onCameraPage = true, inRoom = false))
-        assertEquals(Complete.NONE, CameraFlow.onPermissionsComplete(true, true, cameraWanted = true, lensOpen = false, onCameraPage = false, inRoom = false))
-        assertEquals(Complete.NONE, CameraFlow.onPermissionsComplete(true, true, cameraWanted = true, lensOpen = false, onCameraPage = true, inRoom = true))
-        assertEquals(Complete.NONE, CameraFlow.onPermissionsComplete(wasMissing = false, nowComplete = true, cameraWanted = true, lensOpen = true, onCameraPage = true, inRoom = false))
-    }
-
-    /** The whole headset story: start → SPATIAL_DATA fixed → card names it → Settings → back → picture, no restart. */
+    /** The whole headset story: start → SPATIAL_DATA fixed → card names it → Settings → back → session wanted, no restart. */
     @Test
     fun headsetStoryEndsWithThePictureWithoutRestart() {
         var missing = setOf(CamPerm.SPATIAL_DATA)
         var blocked = CamPerms.blockedAfterAnswer(missing, missing) { false }
-        var lensOpen = false
         val card = CamPerms.prompt(missing, denied = true, blocked = blocked)!!
         assertEquals(listOf(CamPerm.SPATIAL_DATA), card.missing)
         assertEquals(Kind.BLOCKED, card.kind)
-        // the user turns Spatial Data on in Settings and comes back: the resume re-check
-        val was = missing.isNotEmpty()
+        assertEquals(LensPolicy.Want.CLOSED, LensPolicy.want(cameraSource = true, permissionsOn = false, hasCamera = true, windowInFront = true, inRoom = false, failed = false, onCameraPage = true))
+        // the user turns Spatial Data on in Settings and comes back: the 1 s poll / resume re-check
         missing = CamPerm.missing { true }
         blocked = blocked intersect missing
-        when (CameraFlow.onPermissionsComplete(was, missing.isEmpty(), cameraWanted = true, lensOpen = lensOpen, onCameraPage = true, inRoom = false)) {
-            Complete.OPEN, Complete.REOPEN -> lensOpen = true
-            Complete.NONE -> Unit
-        }
-        assertTrue(lensOpen)
         assertNull(CamPerms.prompt(missing, denied = true, blocked = blocked))
+        assertEquals(LensPolicy.Want.OPEN, LensPolicy.want(cameraSource = true, permissionsOn = missing.isEmpty(), hasCamera = true, windowInFront = true, inRoom = false, failed = false, onCameraPage = true))
     }
 }

@@ -1,43 +1,43 @@
 # Filter Cam（空间滤镜相机）
 
-PICO OS 6 spatial app (v0.1.4), Kotlin, PICO Spatial SDK 6.1.9 (BOM), package `io.embodit.filtercam`. Factory app
+PICO OS 6 spatial app (v0.2.0), Kotlin, PICO Spatial SDK 6.1.9 (BOM), package `io.embodit.filtercam`. Factory app
 `filter-cam`. Design package (binding): `C:\Users\Admin\Downloads\spatial-app-factory\apps\filter-cam\design-package.json`
 (states S00–S29, panels P1–P9, entities E0–E4, interactions T1–T18; gate B 2026-11-05: no fisheye). Built from Low Vision
 Walk pieces (LensController, LensSpot, main window template, room Stage veil, PanelRig, LevelGate). All 2D UI is
 SpatialUI + `PicoTheme` (`FcTheme`); no Material anywhere.
 
-## Structure
+## Structure (v0.2.0, design round 4)
 
 ```
 app/src/main/java/io/embodit/filtercam/
-  Main.kt               main window P1 (680 x 680 dp) + LensSpot P3 (right, 320 x 280 dp) + RoomStage (Mixed)
-  domain/               pure Kotlin, unit tested: Filters (8 v1 filters + F10 v1.1 card + imported LUTs), Lut (.cube 17/33/65
-                        → 33³), FilterEngine (the one effect chain: LUT, lift/crush, sharpen, soft, blocks, halation, flash,
-                        leak, vignette, scanlines, grain/noise, strength, instant frame, date stamp), Stamp (seven-segment),
-                        CameraMasks (operator approximation for the live camera), RoomLooks (room overlays), PanelPlace +
-                        SettleGate (P5, D9 / D29), LevelGate, Geometry
+  Main.kt               camera window W1 (600 x 576 dp) + filter window W2 (280 x 576 dp, Placement.right(W1)) + RoomStage (Mixed)
+  domain/               pure Kotlin, unit tested: Filters, Lut, FilterEngine (the one effect chain), Stamp, CamPerms (each
+                        permission on its own, Spatial Data first), CameraWindow (PermCard, LensPolicy, SideWindow, AlbumNav,
+                        ShotQueue, WindowLayout), RoomLooks, PanelPlace + SettleGate (P5), LevelGate, Geometry
   app/                  FcState + FcStore: the one state holder (windows, Stage and debug receiver share it)
-  platform/             Renderer (preview / thumbnails / LUTs / samples), LensController (SpatialML), PhotoRepo (MediaStore),
-                        SoundBank, HelperActivity (photo picker, .cube picker, permissions), Prefs, trackers
-  ui/home/              HomeWindow (TabBar 取景 / 相册 / 设置, settings with 叫回面前 + 退出应用, cards over the page),
-                        ShootPage (main screen 7 controls + 「更多」 drawer S29), FiltersPage (from 更多 → 所有滤镜), GalleryPage, LensSpot
-  ui/shot/              ShotCardView (P4, drawn over the page inside P1 since v0.1.1)
+  platform/             Renderer (viewfinder frames, previews, thumbnails, LUTs, samples), LensController (SpatialML read-back),
+                        PhotoRepo (MediaStore), SoundBank, HelperActivity (photo picker, .cube picker, the two permissions one by one), Prefs
+  ui/home/              HomeWindow (TabBar 拍照 / 相册 / 设置, settings with 叫回面前 + 退出应用), ShootPage (viewfinder + bottom bar:
+                        thumbnail · shutter · 滤镜 + mute; permission card, toasts, fly-in), AlbumPage (newest first)
+  ui/side/              FilterSide (W2: cards, strength, 「更多」 page S29 in place)
   ui/room/              RoomScreen (Stage + P5), RoomScene (ECS overlays, per-frame system), PanelRig, SceneKit
 app/src/debug/          DebugCommandReceiver + DebugCommands (debug builds only)
-tools/                  dev.sh, filters/make_luts.py, filters/filter_sheet.py, samples/fetch_samples.py (CC0 photos, sources.json),
-                        strings/strings.tsv + make_strings.py (edit the TSV, not strings.xml), sounds/make_sounds.py, make_icon.py
+tools/                  dev.sh, filters/, samples/, strings/strings.tsv + make_strings.py (edit the TSV, not strings.xml), sounds/, make_icon.py
 ```
 
-## How a filter reaches the eye
+## How a filter reaches the eye (v0.2.0)
 
-- Sample / my photo: `FilterEngine.render` on the app side → preview box, and the same 640 × 480 frame uploaded to the
-  SpatialML photo tensor (pipeline = RGB → RGBA into the panel's dynamic texture, resubmitted every 250 ms). Saved photos
-  use the same function at 1024 × 768, so the viewfinder shows what gets saved.
-- Camera (headset only): `rectifiedVSTAccess` → `keep * src + greyW * grey + add` with `CameraMasks` (15 Hz). Shutter reads
-  the raw frame back (`readbackContentSuspend`, CAMERA + SPATIAL_DATA) and runs the full engine on it; original saved too.
-  The emulator never builds a camera pipeline (S22).
-- Room mode: Mixed Stage, camera-anchored quads (veil TRANSPARENT, light ADD with 4 phases / 6 s, grain ADD 4 Hz, date
-  ADD), P5 placed once the head is still for 0.5 s.
+- Camera (headset only, CAMERA + SPATIAL_DATA): SpatialML in **Readback Mode** (`ContainerType.DISABLED`, no container window).
+  Each run copies the right-eye frame (`rectifiedVSTAccess`, 640 x 480 RGB) into one of two global tensors; run n+1 is
+  submitted before frame n is read back (`LensController.pipelined`). The raw frame goes to `Renderer.renderLive` (3 workers,
+  newest wins) → `FilterEngine.render` → the viewfinder in W1. The shutter takes the newest raw frame and renders it with
+  the same engine, so the saved photo is the frame on screen. Logs: `LENS camera x Hz read-back`, `VIEWFINDER x Hz shown,
+  render y ms`. Whether the session runs is one rule (`LensPolicy`): camera source + both permissions + a camera + W1 in
+  front + not in room mode; album / settings pause it.
+- Sample / my photo: `FilterEngine.render` at 640 for the viewfinder, 1024 for the saved photo. No SpatialML.
+- Room mode: unchanged (Mixed Stage, camera-anchored quads).
+- Emulator: never a camera session (S22). `readback --es mode ok` feeds the sample as fake camera frames at 20 Hz through
+  the same path (log `READBACK FAKE`), `fail` makes the next camera shot fail (S08f).
 
 ## Build, install, run
 
@@ -98,6 +98,19 @@ Stop the Gradle daemons (`./gradlew.bat --stop`) before starting an emulator on 
   then `source camera`. Card buttons: debug `permCard grant|retry|settings` (same calls as the buttons; adb taps do not
   reach the spatial windows on this ROM).
 
+## v0.2.0 notes (design round 4, 2026-11-18 headset feedback)
+
+- Cold start goes to the camera; a missing permission shows the permission card in the viewfinder (S00). 「开始授权」 asks
+  Spatial Data, then Camera (two system dialogs, `HelperActivity`); 「去设置」 opens App info and the card re-checks every
+  1 s, on resume and on focus. On the emulator the second dialog sits lower: Allow ≈ (1592, 896) for the first, (1592, 783)
+  for the second on the 2560 frame (`uiautomator dump` to be sure).
+- W2 opens with the first picture, folds on 相册 / 设置 / room / the permission card, comes back on 拍照. W1 「滤镜」 folds /
+  unfolds it; its × folds it too (`SideState.closingByApp` tells the two apart). The fold is not kept across starts.
+- After a shot: white 120 ms, frame held 300 ms, then it flies into the corner thumbnail (350 ms); saving shows a ring,
+  up to 3 shots queue. Thumbnail / 相册 tab → the album on the newest photo (`album --es s dump` prints `isNewest`).
+- Emulator screenshots: `pico-cli capture screenshot` sometimes returns a frame with the lower half black; retry, and if it
+  stays, restart that emulator (`adb -s <serial> emu kill`, `pico-cli emulator start --avd <its avd>`).
+
 ## Debug broadcast (QA)
 
 `adb -s <dev> shell am broadcast -a io.embodit.filtercam.DEBUG -p io.embodit.filtercam --es cmd <name> [--es s <arg>] [extras]`
@@ -106,20 +119,22 @@ logs `CMD ok|fail <name>` under tag `FilterCam`; `state` logs `CMD reached <id>`
 
 | command | effect |
 |---|---|
-| `state --es id S00..S29` (also `S07r`, `S08n`, `S08f`) | jump to a design state through the tap paths |
-| `more [close]` · `step next\|prev` · `recall` | 「更多」 drawer · ‹ › on the camera page · settings 「叫回面前」 |
-| `filter --es id F01..F10\|LUT:<name>` · `hover --es id F02` / `hover off` | choose / look at a card |
+| `state --es id S00..S29` (also `S00a S00b S00c S01s S10h S12e`) | jump to a design state through the tap paths |
+| `perm --es step intro\|ask1\|ask2\|missing\|blocked\|wait\|ok\|real` | permission card states without system dialogs (fake permissions; `real` = back to the real ones) |
+| `permCard start\|settings\|sample\|ok` · `permReview` | the card's buttons (same calls) · settings 「重看权限说明」 |
+| `filter --es id F01..F10\|LUT:<name>` · `hover --es id F02` / `hover off` | pick / look at a card |
 | `source sample\|camera\|import [--es photo street\|desk\|window\|cat\|food\|night]` · `sample <name>` | picture source |
-| `strength --ei n 0..100` · `stamp on\|off` · `stampFormat short\|dotted\|off` · `compare on\|off` · `timer on\|off` | camera page |
-| `shutter` | press the shutter (same path as the button) |
-| `readback --es mode ok\|denied\|fail\|sessionLevel\|off` | fake camera read-back on the emulator (log `READBACK FAKE`) |
-| `lens open\|close` · `lens --es fail init\|timeout\|lost` | viewfinder / S21 / S25 |
+| `strength --ei n 0..100` · `stamp on\|off` · `stampFormat short\|dotted\|off` · `compare on\|off` · `timer on\|off` | look |
+| `shutter` · `thumb` · `saveRetry` | shutter · tap the thumbnail · S26 「再试一次」 |
+| `side show\|hide\|more\|less` | W2 open / fold / 「更多」 / back |
+| `album open\|next\|prev\|delete\|confirm\|cancel\|use\|dump` | album page |
+| `readback --es mode ok\|fail\|off` | fake camera frames on the emulator (`READBACK FAKE`) |
+| `lens --es fail init\|timeout\|lost` · `lens --es pipe on\|off` · `lens retry` | S21 / S25 · pipelined read-back on / off · S21 「再试一次」 |
+| `hold --es state countdown\|flash\|fly\|reading\|lost` · `release` | hold a transition under 3 s for a shot |
 | `room` / `room off` · `roomFilter next\|prev` · `recenter` | room mode |
-| `card again\|ok\|delete\|deleteYes\|deleteNo\|redo\|retry` · `gallery --ei i 0` | shot card / gallery |
-| `lang zh\|en` · `mute [on\|off]` · `volume --ei n 0..2` · `guide reset\|ok` · `lut --es path <file>` | settings |
+| `lang zh\|en` · `mute [on\|off]` · `volume --ei n 0..2` · `lut --es path <file>` · `seed --ei n 7` | settings |
 | `save --es fail io` · `import --es fail bad` | S26 / S27 |
-| `permCard grant\|retry\|settings` | the camera permission card's buttons (D58) |
-| `seed --ei n 7` · `hold --es state countdown\|flash\|closing\|reopen\|reading` · `release` · `dump` · `quit` / `quit yes` | QA |
+| `recall` · `quit [yes]` · `dump` | 叫回面前 · quit · state, read-back Hz, viewfinder Hz, permissions |
 
 Screenshot list: every state in `apps/filter-cam/build/ui-audit.md` §8. States with the viewfinder or the room overlays:
 shoot twice and keep the second (system-rendered layers). Transitions under 3 s: `hold` first.

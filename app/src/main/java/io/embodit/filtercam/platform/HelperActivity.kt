@@ -12,35 +12,47 @@ import androidx.activity.result.contract.ActivityResultContracts
 import io.embodit.filtercam.app.FcStore
 import io.embodit.filtercam.domain.CamPerm
 import io.embodit.filtercam.domain.CamPerms
+import io.embodit.filtercam.domain.PermCard
 
 /**
  * A see-through activity that runs one system dialog for the store and finishes: the photo picker (design T8, no
- * READ_MEDIA_IMAGES), the .cube document picker (T9, SAF) and the CAMERA + SPATIAL_DATA request (ActivityResultContracts) when the camera
- * source is picked or on the first camera shutter (S07). Spatial windows have no activity-result owner of their own, so
- * the dialogs go through here.
+ * READ_MEDIA_IMAGES), the .cube document picker (T9, SAF) and the two camera permissions. Spatial windows have no
+ * activity-result owner of their own, so the dialogs go through here.
  *
- * CAMERA + SPATIAL_DATA (2026-11-14 headset: the app never asked, the user got no dialog): the viewfinder's own passthrough
- * in Secure Mode needs no permission; reading the camera frame back (the shutter) needs CAMERA per the SDK docs and
- * CAMERA + SPATIAL_DATA per the 透写台 headset test (design container.permissions). Each is checked on its own and only
- * the missing ones are asked (profile D58: CAMERA on, SPATIAL_DATA refused for good, and the app only said "camera").
+ * Permissions (design r4 S00a, profile D58): asked one at a time, Spatial Data first, then Camera, only the missing
+ * ones; the store is told which one is being asked (the card's 「正在问 1/2」) and, at the end, what is still off and
+ * which were refused for good (no rationale after a refusal: "don't ask again", or USER_FIXED refused with no dialog).
  */
 class HelperActivity : ComponentActivity() {
     private var mode: String? = null
     private var answered = false
 
-    /** What this dialog asked for (only the missing ones: D58, a granted CAMERA is not asked again). */
-    private var requested: Set<CamPerm> = emptySet()
+    /** Still to ask, in order; and everything asked in this round. */
+    private val queue = ArrayDeque<CamPerm>()
+    private val requested = LinkedHashSet<CamPerm>()
 
-    private val askCamera =
-        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
-            val missing = missing(this)
-            // refused with "don't ask again", or USER_FIXED (refused by the system with no dialog): only Settings helps
-            val blocked = CamPerms.blockedAfterAnswer(requested, missing) { shouldShowRequestPermissionRationale(it.id) }
-            FcLog.i("PERMISSION result $result missing=${missing.map { it.name }} blocked=${blocked.map { it.name }}")
-            answered = true
-            FcStore.permissionResult(missing, blocked)
-            finish()
+    private val askOne =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+            FcLog.i("PERMISSION answered ${requested.lastOrNull()?.name} granted=$ok")
+            if (queue.isNotEmpty()) askNext() else finishPermissions()
         }
+
+    private fun askNext() {
+        val p = queue.removeFirst()
+        requested += p
+        FcStore.permissionAsking(p)
+        FcLog.i("PERMISSION asking ${p.name} (${PermCard.step(p)}/2)")
+        askOne.launch(p.id)
+    }
+
+    private fun finishPermissions() {
+        val missing = missing(this)
+        val blocked = CamPerms.blockedAfterAnswer(requested, missing) { shouldShowRequestPermissionRationale(it.id) }
+        FcLog.i("PERMISSION result missing=${missing.map { it.name }} blocked=${blocked.map { it.name }}")
+        answered = true
+        FcStore.permissionResult(missing, blocked)
+        finish()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -56,13 +68,8 @@ class HelperActivity : ComponentActivity() {
             }
             MODE_LUT -> start(Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), REQ_LUT)
             MODE_PERMISSION -> {
-                requested = missing(this)
-                FcLog.i("PERMISSION asking ${requested.map { it.name }}")
-                if (requested.isEmpty()) {
-                    answered = true
-                    FcStore.permissionResult(emptySet(), emptySet())
-                    finish()
-                } else askCamera.launch(requested.map { it.id }.toTypedArray())
+                queue.addAll(CamPerm.values().filter { it in missing(this) })
+                if (queue.isEmpty()) finishPermissions() else askNext()
             }
             else -> finish()
         }

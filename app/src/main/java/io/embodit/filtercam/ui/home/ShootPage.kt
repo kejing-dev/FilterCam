@@ -1,7 +1,10 @@
 package io.embodit.filtercam.ui.home
 
-import androidx.compose.runtime.mutableFloatStateOf
+import android.graphics.Bitmap
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Image
@@ -18,234 +21,361 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.lerp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pico.spatial.ui.design.Button
 import com.pico.spatial.ui.design.ButtonDefaults
 import com.pico.spatial.ui.design.Icon
 import com.pico.spatial.ui.design.PicoTheme
-import com.pico.spatial.ui.design.Slider
-import com.pico.spatial.ui.design.SliderDefaults
-import com.pico.spatial.ui.design.Switch
 import com.pico.spatial.ui.foundation.haptic.controllerHapticFeedback
 import com.pico.spatial.ui.foundation.hover.spatialHoverEffect
 import io.embodit.filtercam.R
 import io.embodit.filtercam.app.FcState
 import io.embodit.filtercam.app.FcStore
 import io.embodit.filtercam.app.NoticeKind
-import io.embodit.filtercam.app.Pages
 import io.embodit.filtercam.app.Source
-import io.embodit.filtercam.domain.CamPerms
-import io.embodit.filtercam.domain.FilterDef
+import io.embodit.filtercam.domain.CamPerm
 import io.embodit.filtercam.domain.Filters
+import io.embodit.filtercam.domain.PermCard
+import io.embodit.filtercam.domain.PermChip
 import io.embodit.filtercam.ui.theme.FcColors
 import io.embodit.filtercam.ui.theme.FcType
 import io.embodit.filtercam.ui.theme.FitText
 import io.embodit.filtercam.ui.theme.LocalTxt
 import io.embodit.filtercam.ui.theme.Txt
-import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
 /**
- * The camera page (design round 3, QA #2 q2-2 / profile B31: one visual lead, one main button, 7 controls with the
- * 3 tabs). Main screen, ≈ 604 dp: the preview 560 x 420, the filter row ‹ name › (64 dp), the bottom row 「更多」 · shutter ·
- * mute (mute always shown, B31 exception). 「更多」 (S29) keeps the preview at 320 x 240 on top and puts the drawer under
- * it in the same window: source, sample photo, strength, date stamp + timer, original, viewfinder, room mode, all filters.
- * Notices are a 3 s line over the preview's lower edge, not a row of their own.
+ * The 「拍照」 page of W1 (design r4, profile B31: one visual lead, one main button). The viewfinder 552 x 414 dp (4:3,
+ * ≈ 0.83 x 0.62 m) is the picture itself: read-back camera frames through the filter on the headset, the sample or my
+ * photo through it otherwise, or the permission card while a permission is missing (S00 series). Under it, 16 dp, the
+ * bottom bar (96 dp): thumbnail · shutter · 「滤镜」 + mute. 6 controls with the 3 tabs, mute exempt (B31 exception).
+ * After a shot: white flash 120 ms, the frame held 300 ms, then it flies into the thumbnail (350 ms); no card.
  */
 @Composable
 fun ShootPage(state: FcState) {
     val t = LocalTxt.current
-    if (state.moreOpen) MoreDrawer(state, t) else MainScreen(state, t)
-}
-
-@Composable
-private fun MainScreen(state: FcState, t: Txt) {
-    Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-        Preview(state, t, 560.dp, 420.dp)
-        Spacer(Modifier.height(12.dp))
-        FilterRow(state, t)
-        Spacer(Modifier.height(12.dp))
-        BottomRow(state, t)
+    val shot by FcStore.shotPicture.collectAsStateWithLifecycle()
+    Box(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxWidth()) {
+            Viewfinder(state, t, shot)
+            Spacer(Modifier.height(GAP))
+            BottomBar(state, t, shot)
+        }
+        FlyIn(state, shot)
     }
 }
 
 // ---------------------------------------------------------------------------------------------
-// the preview (the page's lead) and its 3 s notice line
+// the viewfinder
 // ---------------------------------------------------------------------------------------------
 
-/**
- * The current source through the current filter (Compose Image); with the camera the filter's sample and a corner line
- * 「画面在取景窗里 →」 (H3). White flash on the shutter (S06), the countdown on the shutter (S05).
- */
 @Composable
-private fun Preview(state: FcState, t: Txt, w: Dp, h: Dp) {
+private fun Viewfinder(state: FcState, t: Txt, shot: Bitmap?) {
+    val live by FcStore.renderer.live.collectAsStateWithLifecycle()
     val preview by FcStore.renderer.preview.collectAsStateWithLifecycle()
     val square = FcStore.def(state.previewFilter).square
-    Box(Modifier.size(w, h).clip(RoundedCornerShape(20.dp)).background(FcColors.Plate), contentAlignment = Alignment.Center) {
-        val bmp = preview
-        if (state.source == Source.CAMERA && !state.permissionGranted && state.hoverId == null) {
-            CameraPermission(state, t, big = w >= 400.dp)
-        } else if (state.noCamera && state.hoverId == null) {
-            FitText(t(R.string.no_camera), where = "shoot/noCamera", style = FcType.body, color = FcColors.OnPlate, textAlign = TextAlign.Center, maxLines = 3, modifier = Modifier.padding(24.dp))
-        } else if (bmp != null) {
-            Image(bmp.asImageBitmap(), contentDescription = null, contentScale = if (square) ContentScale.Fit else ContentScale.Crop, modifier = Modifier.fillMaxSize())
-            if (state.source == Source.CAMERA && state.hoverId == null) {
-                Box(Modifier.align(Alignment.TopEnd).padding(10.dp).background(FcColors.Plate.copy(alpha = 0.82f), RoundedCornerShape(10.dp)).padding(horizontal = 10.dp, vertical = 4.dp)) {
-                    FitText(t(R.string.camera_in_lens), where = "shoot/inLens", style = FcType.small, color = FcColors.OnPlate, maxLines = 1, softWrap = false)
+    Box(Modifier.size(VF_W, VF_H).clip(RoundedCornerShape(20.dp)).background(FcColors.Plate), contentAlignment = Alignment.Center) {
+        when {
+            state.permissionCard -> PermissionCard(state, t)
+            state.lensError != null -> LensErrorCard(t)
+            state.source == Source.CAMERA -> {
+                val frame = live
+                when {
+                    frame != null -> Image(frame.shown.asImageBitmap(), contentDescription = null, contentScale = if (square) ContentScale.Fit else ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                    state.noCamera -> NoCamera(t)
+                    else -> FitText(t(R.string.opening_lens), where = "shoot/opening", style = FcType.body, color = FcColors.OnPlate, maxLines = 1)
                 }
             }
+            else -> {
+                preview?.let { Image(it.asImageBitmap(), contentDescription = null, contentScale = if (square) ContentScale.Fit else ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
+                SourceLabel(state, t, Modifier.align(Alignment.TopStart))
+            }
         }
-        if (state.flashing) Box(Modifier.fillMaxSize().background(FcColors.Flash.copy(alpha = 0.85f)))
+        if (state.compare && !state.permissionCard) Chip(t(R.string.compare_on), "shoot/compare", Modifier.align(Alignment.TopEnd).padding(12.dp))
+        // S06: the flash, then the frame held still until the fly starts
+        if (state.flashing) {
+            val flash by produceState(true, FcStore.state.value.thumb?.serial) {
+                value = true
+                delay(FLASH_MS)
+                value = false
+            }
+            // debug `hold --es state flash` keeps the white (design D36: transitions under 3 s are held for the shot)
+            if (flash || FcStore.held == "flash") Box(Modifier.fillMaxSize().background(FcColors.Flash.copy(alpha = 0.9f)))
+            else shot?.let { Image(it.asImageBitmap(), contentDescription = null, contentScale = if (square) ContentScale.Fit else ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
+        }
+        state.countdown?.let { n ->
+            Box(Modifier.size(140.dp).background(FcColors.Plate.copy(alpha = 0.7f), CircleShape), contentAlignment = Alignment.Center) {
+                FitText("$n", where = "shoot/countdown", style = FcType.bigClock, color = FcColors.OnPlate, maxLines = 1, softWrap = false)
+            }
+        }
         Toast(state, t, Modifier.align(Alignment.BottomCenter))
     }
 }
 
+/** Top-left on photo sources: 「示例 · 街角」 / 「我的照片 · name」, plus 「要拍真房间：开权限」 while a permission is off (S01s). */
+@Composable
+private fun SourceLabel(state: FcState, t: Txt, modifier: Modifier) {
+    Row(modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
+        val label = if (state.source == Source.IMPORT) t(R.string.src_label_import, Filters.shortLutName(state.importName ?: "")) else t(R.string.src_label_sample, FilterText.sample(t, state.sample))
+        Chip(label, "shoot/sourceLabel")
+        if (!state.permissionGranted && !state.isEmulator) {
+            Box(Modifier.height(48.dp).clip(RoundedCornerShape(12.dp)).background(FcColors.Accent).clickable { FcStore.sourceSelected(Source.CAMERA) }.padding(horizontal = 12.dp), contentAlignment = Alignment.Center) {
+                FitText(t(R.string.perm_sample_chip), where = "shoot/permChip", style = FcType.small, color = FcColors.OnAccent, maxLines = 1, softWrap = false)
+            }
+        }
+    }
+}
+
+@Composable
+private fun Chip(text: String, where: String, modifier: Modifier = Modifier) {
+    Box(modifier.background(FcColors.Plate.copy(alpha = 0.82f), RoundedCornerShape(10.dp)).padding(horizontal = 10.dp, vertical = 4.dp)) {
+        FitText(text, where = where, style = FcType.small, color = FcColors.OnPlate, maxLines = 1, softWrap = false)
+    }
+}
+
+/** S22 (the emulator): no camera picture, one line and a way to the sample. */
+@Composable
+private fun NoCamera(t: Txt) {
+    Column(Modifier.padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(20.dp)) {
+        FitText(t(R.string.no_camera), where = "shoot/noCamera", style = FcType.body, color = FcColors.OnPlate, textAlign = TextAlign.Center, maxLines = 3)
+        KeyButton(t(R.string.use_sample), "shoot/useSample", accent = true) { FcStore.sourceSelected(Source.SAMPLE) }
+    }
+}
+
+/** S21: the session could not start; 「再试一次」 or the sample. The technical reason is in the log only. */
+@Composable
+private fun LensErrorCard(t: Txt) {
+    Column(Modifier.padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        FitText(t(R.string.lens_unavailable, ""), where = "lensError/title", style = FcType.cardName, color = FcColors.OnPlate, textAlign = TextAlign.Center, maxLines = 2)
+        FitText(t(R.string.lens_fail_hint), where = "lensError/hint", style = FcType.small, color = FcColors.OnPlate, textAlign = TextAlign.Center, maxLines = 3)
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            KeyButton(t(R.string.try_again), "lensError/retry", accent = true) { FcStore.lensRetry() }
+            KeyButton(t(R.string.use_sample), "lensError/sample", onPlate = true) { FcStore.sourceSelected(Source.SAMPLE) }
+        }
+    }
+}
+
 /**
- * Camera source without its permissions (B19, 2026-11-14 headset; D58, 2026-11-17): where the picture goes, name each
- * missing permission (CAMERA and SPATIAL_DATA are checked on their own, with one status each) and offer the way on:
- * 「授权」 (the system dialog) before any answer; after a refusal 「去设置」 (the app's settings page) and, while the
- * system will still ask for one of them, 「再问一次」; refused for good, where to find it in Settings. Never a black box.
+ * The permission card (design r4 S00 / S00a / S00b / S00c, profile D58): both permissions listed, Spatial Data first,
+ * each with what it is for and a status tag; the main button starts the dialogs one by one, asks again, or opens
+ * Settings (with where to find it); 「先用示例照片玩」 always works. Settings opens beside this window in Shared Space,
+ * so while the card shows it looks again every second (and on resume / focus): both on → the picture within 3 s.
  */
 @Composable
-private fun CameraPermission(state: FcState, t: Txt, big: Boolean) {
-    val keyH = if (big) 64.dp else 48.dp
-    // Settings opens beside this window in Shared Space, so the window is not paused and gets no ON_RESUME on the way
-    // back: while this card shows, look again every 1.5 s; once both are on the picture starts (FcStore.permissionRecheck)
+private fun PermissionCard(state: FcState, t: Txt) {
     LaunchedEffect(Unit) {
         while (true) {
             delay(PERMISSION_POLL_MS)
             FcStore.permissionRecheck("card poll")
         }
     }
-    Column(Modifier.fillMaxSize().padding(if (big) 32.dp else 14.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-        Icon(painter = painterResource(R.drawable.ic_camera), contentDescription = null, modifier = Modifier.size(if (big) 48.dp else 28.dp), tint = FcColors.OnPlate)
-        Spacer(Modifier.height(if (big) 16.dp else 8.dp))
-        val prompt = state.permPrompt ?: return@Column
-        FitText(
-            FcStore.permText(prompt),
-            where = "shoot/camPerm",
-            style = if (big) FcType.body else FcType.small,
-            color = FcColors.OnPlate,
-            textAlign = TextAlign.Center,
-            maxLines = 5,
-        )
-        Spacer(Modifier.height(if (big) 12.dp else 6.dp))
-        FitText(
-            FcStore.permStatus(state.missingPerms),
-            where = "shoot/camPermStatus",
-            style = FcType.small,
-            color = FcColors.OnPlate,
-            textAlign = TextAlign.Center,
-            maxLines = 2,
-        )
-        Spacer(Modifier.height(if (big) 20.dp else 10.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            if (prompt.kind == CamPerms.Kind.NEED) {
-                PillButton(t(R.string.cam_perm_grant), "shoot/camPermGrant", accent = true, modifier = Modifier.height(keyH)) { FcStore.askCamera("preview button") }
-            } else {
-                PillButton(t(R.string.cam_perm_settings), "shoot/camPermSettings", accent = true, modifier = Modifier.height(keyH)) { FcStore.openPermissionSettings() }
-                if (prompt.canAskAgain) PillButton(t(R.string.cam_perm_retry), "shoot/camPermRetry", onPlate = true, modifier = Modifier.height(keyH)) { FcStore.askCamera("ask again") }
+    val prompt = state.permPrompt
+    Column(Modifier.fillMaxSize().padding(horizontal = 28.dp, vertical = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterVertically)) {
+        FitText(t(R.string.perm_title), where = "perm/title", style = FcType.cardName, color = FcColors.OnPlate, maxLines = 1)
+        CamPerm.values().forEach { p ->
+            PermRow(p, PermCard.chip(p, state.missingPerms, state.permissionDenied, state.blockedPerms, state.asking), t)
+        }
+        if (prompt != null && prompt.kind != io.embodit.filtercam.domain.CamPerms.Kind.NEED) {
+            PermCard.named(prompt)?.let { p -> FitText(t(R.string.perm_missing, FcStore.permName(p), FcStore.permWhy(p)), where = "perm/missing", style = FcType.small, color = FcColors.OnPlate, maxLines = 2) }
+        }
+        prompt?.blocked?.forEach { p ->
+            FitText(t(if (p == CamPerm.SPATIAL_DATA) R.string.perm_path else R.string.perm_path_camera), where = "perm/path", style = FcType.tiny, color = FcColors.OnPlate, maxLines = 3)
+        }
+        if (state.permWaiting) FitText(t(R.string.perm_waiting), where = "perm/waiting", style = FcType.small, color = FcColors.Accent, maxLines = 1)
+        if (prompt == null) FitText(t(R.string.perm_all_on), where = "perm/allOn", style = FcType.small, color = FcColors.OnPlate, maxLines = 1)
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            when (prompt?.let { PermCard.action(it) }) {
+                PermCard.Action.START -> KeyButton(t(R.string.perm_start), "perm/start", accent = true, enabled = state.asking == null) { FcStore.startPermissions("card") }
+                PermCard.Action.ASK_AGAIN -> KeyButton(t(R.string.perm_again), "perm/again", accent = true, enabled = state.asking == null) { FcStore.startPermissions("ask again") }
+                PermCard.Action.SETTINGS -> KeyButton(t(R.string.perm_go_settings), "perm/settings", accent = true) { FcStore.openPermissionSettings() }
+                null -> KeyButton(t(R.string.perm_ok), "perm/ok", accent = true) { FcStore.permReviewDone() }
             }
+            if (prompt != null) KeyButton(t(R.string.perm_sample), "perm/sample", onPlate = true) { FcStore.sourceSelected(Source.SAMPLE) }
         }
     }
 }
 
-/** The one-line notices (design S16 / S24 / S25 / S27 / S28 / S11 3 s; the lens note once, 4 s; lens reopening / closing while it lasts). */
+@Composable
+private fun PermRow(p: CamPerm, chip: PermChip, t: Txt) {
+    Row(Modifier.fillMaxWidth().height(60.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(32.dp).background(FcColors.PlateRaised, CircleShape), contentAlignment = Alignment.Center) {
+            FitText("${PermCard.step(p)}", where = "perm/step", style = FcType.small, color = FcColors.OnPlate, maxLines = 1, softWrap = false)
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            FitText(FcStore.permName(p), where = "perm/name", style = FcType.body, color = FcColors.OnPlate, maxLines = 1, softWrap = false)
+            FitText(FcStore.permWhy(p), where = "perm/why", style = FcType.tiny, color = FcColors.OnPlate, maxLines = 2)
+        }
+        Spacer(Modifier.width(12.dp))
+        val (text, fill, ink) =
+            when (chip) {
+                PermChip.OFF -> Triple(t(R.string.chip_off), FcColors.PlateRaised, FcColors.OnPlate)
+                PermChip.ASKING -> Triple(t(R.string.chip_asking, PermCard.step(p)), FcColors.Accent, FcColors.OnAccent)
+                PermChip.ON -> Triple(t(R.string.chip_on), FcColors.PlateRaised, FcColors.OnPlate)
+                PermChip.REFUSED -> Triple(t(R.string.chip_refused), FcColors.Danger, FcColors.OnDanger)
+            }
+        Box(Modifier.background(fill, RoundedCornerShape(10.dp)).padding(horizontal = 10.dp, vertical = 6.dp)) {
+            FitText(text, where = "perm/chip", style = FcType.small, color = ink, maxLines = 1, softWrap = false)
+        }
+    }
+}
+
+/** The one-line toasts over the viewfinder's lower edge (3 s; the first hint 4 s; save failed 5 s with 「再试一次」). */
 @Composable
 private fun Toast(state: FcState, t: Txt, modifier: Modifier) {
-    val n = state.notice
+    val n = state.notice?.takeIf { it.kind !in SIDE_NOTICES }
     LaunchedEffect(n?.serial) {
         if (n == null) return@LaunchedEffect
-        delay(NOTICE_MS)
-        if (FcStore.state.value.notice?.serial == n.serial) FcStore.noticeDismissed()
-    }
-    var showLensNote by remember { mutableStateOf(false) }
-    LaunchedEffect(state.lens.live) {
-        if (!state.lens.live || lensNoteShown) return@LaunchedEffect
-        lensNoteShown = true
-        showLensNote = true
-        delay(LENS_NOTE_MS)
-        showLensNote = false
+        delay(
+            when (n.kind) {
+                NoticeKind.HINT -> HINT_MS
+                NoticeKind.SAVE_FAILED -> SAVE_FAILED_MS
+                else -> NOTICE_MS
+            }
+        )
+        FcStore.noticeDismissed(n.serial)
     }
     val text =
-        when {
-            state.lens.reopening -> t(R.string.lens_reopen)
-            state.lens.closing -> t(R.string.closing_lens)
-            n != null ->
-                when (n.kind) {
-                    NoticeKind.LENS_CLOSED_SAMPLE -> t(R.string.lens_closed_sample)
-                    NoticeKind.RESUME -> t(R.string.resume_hint)
-                    NoticeKind.LENS_LOST -> t(R.string.lens_lost)
-                    NoticeKind.V11 -> t(R.string.v11_soon, FilterText.name(t, n.arg ?: "F10"))
-                    NoticeKind.IMPORT_FAILED -> t(R.string.import_failed)
-                    NoticeKind.LUT_BAD -> t(R.string.lut_bad)
-                    NoticeKind.LUT_ADDED -> t(R.string.lut_added, Filters.shortLutName(n.arg ?: ""))
-                }
-            showLensNote -> t(R.string.lens_note)
+        when (n?.kind) {
+            NoticeKind.HINT -> t(R.string.lens_note)
+            NoticeKind.LENS_BACK -> t(R.string.lens_reopen)
+            NoticeKind.LENS_LOST -> t(R.string.lens_lost)
+            NoticeKind.READ_FAILED -> t(R.string.readback_failed)
+            NoticeKind.SAVE_FAILED -> t(R.string.save_failed)
             else -> null
         }
     AnimatedVisibility(text != null, modifier = modifier, enter = fadeIn(), exit = fadeOut()) {
-        Box(Modifier.fillMaxWidth().background(FcColors.Plate.copy(alpha = 0.88f)).padding(horizontal = 16.dp, vertical = 10.dp)) {
-            FitText(text ?: "", where = "shoot/toast", style = FcType.small, color = FcColors.OnPlate, maxLines = 2)
+        Row(Modifier.fillMaxWidth().background(FcColors.Plate.copy(alpha = 0.88f)).padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            FitText(text ?: "", where = "shoot/toast", style = FcType.small, color = FcColors.OnPlate, maxLines = 2, modifier = Modifier.weight(1f))
+            if (n?.kind == NoticeKind.SAVE_FAILED) {
+                Spacer(Modifier.width(12.dp))
+                PillButton(t(R.string.retry_save), "shoot/saveRetry", onPlate = true) { FcStore.saveRetry() }
+            }
         }
     }
 }
 
-private var lensNoteShown = false
-private const val NOTICE_MS = 3_000L
-private const val LENS_NOTE_MS = 4_000L
-private const val TAGLINE_MS = 2_000L
-private const val PERMISSION_POLL_MS = 1_500L
-
 // ---------------------------------------------------------------------------------------------
-// main screen rows
+// the bottom bar: thumbnail · shutter · 「滤镜」 + mute
 // ---------------------------------------------------------------------------------------------
 
-/** ‹ name › (64 dp): the 8 v1 filters plus imported LUTs round and round; the tagline shows for 2 s after a change. */
 @Composable
-private fun FilterRow(state: FcState, t: Txt) {
-    var showTagline by remember { mutableStateOf(false) }
-    var first by remember { mutableStateOf(true) }
-    LaunchedEffect(state.filterId) {
-        if (first) return@LaunchedEffect run { first = false }
-        showTagline = true
-        delay(TAGLINE_MS)
-        showTagline = false
+private fun BottomBar(state: FcState, t: Txt, shot: Bitmap?) {
+    Row(Modifier.width(VF_W).height(BAR_H), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) { Thumbnail(state, t, shot) }
+        Shutter(state, t)
+        Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.End), verticalAlignment = Alignment.CenterVertically) {
+            val sideOn = FcStore.sideShown
+            Button(
+                onClick = { FcStore.sideToggled() },
+                enabled = !state.permissionCard,
+                modifier = Modifier.height(64.dp).widthIn(min = 112.dp).then(if (sideOn) Modifier.border(3.dp, FcColors.Accent, RoundedCornerShape(32.dp)) else Modifier),
+                colors = ButtonDefaults.buttonColors(containerColor = PicoTheme.colorScheme.fillTertiary, contentColor = PicoTheme.colorScheme.labelPrimary),
+            ) {
+                Icon(painter = painterResource(R.drawable.ic_filters), contentDescription = null, modifier = Modifier.size(22.dp), tint = PicoTheme.colorScheme.labelPrimary)
+                Spacer(Modifier.width(6.dp))
+                FitText(t(R.string.filters_btn), where = "shoot/filters", maxLines = 1, softWrap = false, color = PicoTheme.colorScheme.labelPrimary)
+            }
+            RoundKey(if (state.muted) R.drawable.ic_sound_off else R.drawable.ic_sound_on, if (state.muted) t(R.string.unmute) else t(R.string.mute), "shoot/mute") { FcStore.muteToggled() }
+        }
     }
-    Row(Modifier.fillMaxWidth().height(64.dp), verticalAlignment = Alignment.CenterVertically) {
-        RoundKey(R.drawable.ic_chevron_left, t(R.string.prev_filter), "shoot/prev") { FcStore.filterStep(-1) }
-        Column(Modifier.weight(1f).padding(horizontal = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            FitText(FilterText.name(t, state.filterId), where = "shoot/filterName", style = FcType.title, color = PicoTheme.colorScheme.labelPrimary, maxLines = 1, softWrap = false)
-            val tagline = if (state.filterId.startsWith(FilterDef.LUT_PREFIX)) "" else FilterText.tagline(t, state.filterId)
-            AnimatedVisibility(showTagline && tagline.isNotEmpty(), enter = fadeIn(), exit = fadeOut()) {
-                FitText(tagline, where = "shoot/tagline", style = FcType.small, color = PicoTheme.colorScheme.labelPrimary, maxLines = 1, softWrap = false)
+}
+
+/**
+ * The corner thumbnail (design S06 / S08 / S26): the last shot (the picture right away, the saved file afterwards), a
+ * ring while saving, a red 「!」 when the save failed, a dashed frame with the album icon when there are no photos yet.
+ * Tap → the album on the newest photo.
+ */
+@Composable
+private fun Thumbnail(state: FcState, t: Txt, shot: Bitmap?) {
+    val thumb = state.thumb
+    val fromFile by produceState<Bitmap?>(null, thumb?.uri) { value = thumb?.uri?.let { u -> withContext(kotlinx.coroutines.Dispatchers.IO) { FcStore.photos.thumbnail(u, 192, 192) } } }
+    // while the fly is on its way the corner still shows the one before (design: it lands, then the corner changes)
+    val flying = state.flashing
+    val pic = if (thumb != null && thumb.serial > 0 && shot != null && !flying) shot else fromFile
+    val pulse = remember { Animatable(1f) }
+    LaunchedEffect(thumb?.serial, flying) {
+        if (thumb == null || thumb.serial == 0 || flying) return@LaunchedEffect
+        delay(FLY_MS.toLong())
+        pulse.snapTo(1.12f)
+        pulse.animateTo(1f, tween(220))
+    }
+    val interaction = remember { MutableInteractionSource() }
+    Box(Modifier.size(THUMB + 8.dp), contentAlignment = Alignment.Center) {
+        Box(
+            Modifier.scale(pulse.value)
+                .size(THUMB)
+                .clip(RoundedCornerShape(16.dp))
+                .background(FcColors.Plate)
+                .border(if (state.saving > 0) 3.dp else 2.dp, if (state.saving > 0) FcColors.Accent else PicoTheme.colorScheme.fillSecondary, RoundedCornerShape(16.dp))
+                .spatialHoverEffect()
+                .clickable(interactionSource = interaction, indication = LocalIndication.current, onClickLabel = t(R.string.gallery)) { FcStore.albumOpen("thumbnail") }
+                .controllerHapticFeedback(interactionSource = interaction),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (pic != null) {
+                Image(pic.asImageBitmap(), contentDescription = t(R.string.gallery), contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            } else {
+                Icon(painter = painterResource(R.drawable.ic_gallery), contentDescription = t(R.string.gallery), modifier = Modifier.size(30.dp), tint = PicoTheme.colorScheme.labelPrimary)
             }
         }
-        RoundKey(R.drawable.ic_chevron_right, t(R.string.next_filter), "shoot/next") { FcStore.filterStep(1) }
+        if (thumb?.failed == true) {
+            Box(Modifier.align(Alignment.TopEnd).size(24.dp).background(FcColors.Danger, CircleShape), contentAlignment = Alignment.Center) {
+                FitText("!", where = "shoot/thumbFailed", style = FcType.small, color = FcColors.OnDanger, maxLines = 1, softWrap = false)
+            }
+        }
     }
+}
+
+/** The shot flies from the viewfinder into the thumbnail (350 ms ease-out) once the flash and the hold are over. */
+@Composable
+private fun FlyIn(state: FcState, shot: Bitmap?) {
+    val serial = state.thumb?.serial ?: 0
+    val p = remember { Animatable(1f) }
+    LaunchedEffect(serial, state.flashing) {
+        if (serial == 0 || state.flashing) {
+            if (state.flashing) p.snapTo(0f)
+            return@LaunchedEffect
+        }
+        if (p.value >= 1f) return@LaunchedEffect
+        if (FcStore.held == "fly") {
+            p.animateTo(0.5f, tween(FLY_MS / 2))
+            while (FcStore.held == "fly") delay(100)
+        }
+        p.animateTo(1f, tween(FLY_MS, easing = FastOutSlowInEasing))
+    }
+    val pic = shot ?: return
+    if (p.value >= 1f || state.flashing) return
+    val k = p.value
+    val x = lerp(0.dp, 4.dp, k)
+    val y = lerp(0.dp, VF_H + GAP + (BAR_H - THUMB) / 2, k)
+    val w = lerp(VF_W, THUMB, k)
+    val h = lerp(VF_H, THUMB, k)
+    Image(pic.asImageBitmap(), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.offset(x, y).size(w, h).clip(RoundedCornerShape(lerp(20.dp, 16.dp, k))))
 }
 
 /** A 64 dp round key with an icon only; [label] is its accessibility name. */
@@ -261,41 +391,25 @@ private fun RoundKey(icon: Int, label: String, where: String, onClick: () -> Uni
             .controllerHapticFeedback(interactionSource = interaction),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(painter = painterResource(icon), contentDescription = label, modifier = Modifier.size(32.dp), tint = PicoTheme.colorScheme.labelPrimary)
+        Icon(painter = painterResource(icon), contentDescription = label, modifier = Modifier.size(30.dp), tint = PicoTheme.colorScheme.labelPrimary)
     }
 }
 
-/** 「更多」 · shutter · mute (96 dp, 16 dp apart; mute stays on the main screen, B31 exception). */
+/** A 64 dp key on the viewfinder plate (permission card, S21, S22). */
 @Composable
-private fun BottomRow(state: FcState, t: Txt) {
-    Row(Modifier.fillMaxWidth().height(96.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
-            BigPill(t(R.string.more), "shoot/more", R.drawable.ic_more) { FcStore.moreToggled(true) }
-        }
-        Shutter(state, t)
-        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
-            BigPill(if (state.muted) t(R.string.unmute) else t(R.string.mute), "shoot/mute", if (state.muted) R.drawable.ic_sound_off else R.drawable.ic_sound_on) { FcStore.muteToggled() }
-        }
-    }
-}
-
-/** A 64 dp high secondary button with icon and word (≥ 120 dp wide, design 「更多」). */
-@Composable
-private fun BigPill(label: String, where: String, icon: Int, enabled: Boolean = true, accent: Boolean = false, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    val ink = if (accent) FcColors.OnAccent else PicoTheme.colorScheme.labelPrimary
+private fun KeyButton(label: String, where: String, accent: Boolean = false, onPlate: Boolean = false, enabled: Boolean = true, onClick: () -> Unit) {
+    val ink = if (accent) FcColors.OnAccent else if (onPlate) FcColors.OnPlate else PicoTheme.colorScheme.labelPrimary
     Button(
         onClick = onClick,
         enabled = enabled,
-        modifier = modifier.height(64.dp).widthIn(min = 140.dp),
-        colors = ButtonDefaults.buttonColors(containerColor = if (accent) FcColors.Accent else PicoTheme.colorScheme.fillTertiary, contentColor = ink),
+        modifier = Modifier.height(64.dp).widthIn(min = 140.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = if (accent) FcColors.Accent else if (onPlate) FcColors.PlateRaised else PicoTheme.colorScheme.fillTertiary, contentColor = ink),
     ) {
-        Icon(painter = painterResource(icon), contentDescription = null, modifier = Modifier.size(24.dp), tint = ink)
-        Spacer(Modifier.width(8.dp))
         FitText(label, where = where, maxLines = 1, softWrap = false, color = ink)
     }
 }
 
-/** Design: Ø 88 dp accent disc, dark word, white ring; the countdown number replaces the word (S05), a spinner while reading (S08). */
+/** Design: Ø 88 dp accent disc, dark word, white ring; the countdown number replaces the word (S05). */
 @Composable
 private fun Shutter(state: FcState, t: Txt) {
     val enabled = FcStore.shutterEnabled || state.countdown != null
@@ -311,149 +425,15 @@ private fun Shutter(state: FcState, t: Txt) {
             .controllerHapticFeedback(interactionSource = interaction),
         contentAlignment = Alignment.Center,
     ) {
-        val word =
-            when {
-                state.countdown != null -> "${state.countdown}"
-                state.reading -> t(R.string.reading)
-                else -> t(R.string.shutter)
-            }
         FitText(
-            word,
+            if (state.countdown != null) "${state.countdown}" else t(R.string.shutter),
             where = "shoot/shutter",
-            style = if (state.countdown != null) FcType.bigClock else if (state.reading) FcType.small else FcType.cardName,
+            style = if (state.countdown != null) FcType.bigClock else FcType.cardName,
             color = if (enabled) FcColors.OnAccent else PicoTheme.colorScheme.labelPrimary,
             maxLines = 1,
             softWrap = false,
         )
     }
-}
-
-// ---------------------------------------------------------------------------------------------
-// 「更多」 (S29): the preview stays on top at 320 x 240, the drawer scrolls under it
-// ---------------------------------------------------------------------------------------------
-
-@Composable
-private fun MoreDrawer(state: FcState, t: Txt) {
-    Column(Modifier.fillMaxSize()) {
-        Box(Modifier.fillMaxWidth().height(240.dp)) {
-            Box(Modifier.align(Alignment.Center)) { Preview(state, t, 320.dp, 240.dp) }
-            BigPill(t(R.string.more_done), "more/done", R.drawable.ic_more, modifier = Modifier.align(Alignment.TopEnd)) { FcStore.moreToggled(false) }
-        }
-        Spacer(Modifier.height(12.dp))
-        Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState())) {
-            SourceRow(state, t)
-            SampleRow(state, t)
-            StrengthRow(state, t)
-            StampTimerRow(state, t)
-            CompareRow(state, t)
-            LensRow(state, t)
-            ActionRow { BigPill(t(R.string.room_try), "more/room", R.drawable.ic_room) { FcStore.roomTry() } }
-            ActionRow { BigPill(t(R.string.all_filters) + " →", "more/filters", R.drawable.ic_filters) { FcStore.pageSelected(Pages.FILTERS) } }
-        }
-    }
-}
-
-private val ROW_H = 56.dp
-
-@Composable
-private fun Label(text: String, where: String, modifier: Modifier = Modifier) =
-    FitText(text, where = where, style = FcType.body, color = PicoTheme.colorScheme.labelPrimary, maxLines = 1, softWrap = false, modifier = modifier)
-
-@Composable
-private fun SourceRow(state: FcState, t: Txt) {
-    Row(Modifier.fillMaxWidth().height(ROW_H), verticalAlignment = Alignment.CenterVertically) {
-        Label(t(R.string.shoot_from), "more/source", Modifier.weight(1f))
-        Options(
-            listOf(Source.CAMERA to t(R.string.src_camera), Source.SAMPLE to t(R.string.src_sample), Source.IMPORT to t(R.string.src_import)),
-            state.source,
-            112.dp,
-            "more/source",
-        ) { FcStore.sourceSelected(it) }
-    }
-}
-
-/** Which sample photo (tap › for the next of 6); with 「我的照片」 the file name (cut to 14, M8) and 「选一张」; hidden with the camera. */
-@Composable
-private fun SampleRow(state: FcState, t: Txt) {
-    if (state.source == Source.CAMERA) return
-    Row(Modifier.fillMaxWidth().height(ROW_H), verticalAlignment = Alignment.CenterVertically) {
-        if (state.source == Source.IMPORT) {
-            Label(Filters.shortLutName(state.importName ?: ""), "more/importName", Modifier.weight(1f))
-            PillButton(t(R.string.pick_photo), "more/pick") { FcStore.pickPhoto() }
-        } else {
-            Label(t(R.string.sample_photo), "more/sample", Modifier.weight(1f))
-            val i = FilterText.samples.indexOf(state.sample).coerceAtLeast(0)
-            PillButton(FilterText.sample(t, state.sample) + "  ›", "more/sampleNext") { FcStore.sampleSelected(FilterText.samples[Math.floorMod(i + 1, FilterText.samples.size)]) }
-        }
-    }
-}
-
-@Composable
-private fun StrengthRow(state: FcState, t: Txt) {
-    Row(Modifier.fillMaxWidth().height(ROW_H), verticalAlignment = Alignment.CenterVertically) {
-        Label(t(R.string.strength), "more/strength", Modifier.width(120.dp))
-        // a local Float follows the finger (B20); the store gets whole steps as it moves
-        var k by remember(state.strength) { mutableFloatStateOf(state.strength.toFloat()) }
-        Slider(
-            value = k,
-            onValueChange = {
-                k = it
-                FcStore.strengthChanged(it.roundToInt())
-            },
-            modifier = Modifier.weight(1f).height(48.dp),
-            valueRange = 0f..100f,
-            enabled = !state.compare,
-            colors = SliderDefaults.sliderColors(trackColor = PicoTheme.colorScheme.fillPrimary, progressColor = FcColors.Accent, progressHighColor = FcColors.Accent),
-        )
-        Spacer(Modifier.width(16.dp))
-        Label("${state.strength}", "more/strength", Modifier.width(44.dp))
-    }
-}
-
-/** Date stamp and the 3 s timer on one row, each with its word (design). */
-@Composable
-private fun StampTimerRow(state: FcState, t: Txt) {
-    Row(Modifier.fillMaxWidth().height(ROW_H), verticalAlignment = Alignment.CenterVertically) {
-        SwitchCell(t(R.string.stamp), "more/stamp", state.stampOn, Modifier.weight(1f)) { FcStore.stampToggled(it) }
-        Spacer(Modifier.width(24.dp))
-        SwitchCell(t(R.string.timer), "more/timer", state.timerOn, Modifier.weight(1f)) { FcStore.timerToggled(it) }
-    }
-}
-
-@Composable
-private fun SwitchCell(label: String, where: String, on: Boolean, modifier: Modifier, enabled: Boolean = true, onChange: (Boolean) -> Unit) {
-    Row(modifier.height(ROW_H).clickable(enabled = enabled) { onChange(!on) }, verticalAlignment = Alignment.CenterVertically) {
-        Label(label, where, Modifier.weight(1f))
-        Box(Modifier.size(64.dp, 48.dp), contentAlignment = Alignment.Center) { Switch(checked = on, enabled = enabled, onCheckedChange = onChange) }
-    }
-}
-
-/** 「原样 开 / 关」 (D19: the button says what it shows now). */
-@Composable
-private fun CompareRow(state: FcState, t: Txt) {
-    ActionRow {
-        BigPill(if (state.compare) t(R.string.compare_on) else t(R.string.compare_off), "more/compare", R.drawable.ic_compare, accent = state.compare) { FcStore.compareToggled() }
-    }
-}
-
-/** The viewfinder on / off (with the camera, off = back to the sample, R2-2); busy while it opens, closes or reopens. */
-@Composable
-private fun LensRow(state: FcState, t: Txt) {
-    val busy = state.lens.closing || state.lens.reopening
-    val label =
-        when {
-            state.lens.closing -> t(R.string.closing_lens)
-            state.lens.opening -> t(R.string.opening_lens)
-            else -> t(R.string.viewfinder)
-        }
-    SwitchCell(label, "more/lens", state.lens.open, Modifier.fillMaxWidth(), enabled = !busy) { on ->
-        if (on) FcStore.openLens("more") else FcStore.closeLens("more", toSample = true)
-    }
-}
-
-@Composable
-private fun ActionRow(content: @Composable () -> Unit) {
-    Box(Modifier.fillMaxWidth().height(ROW_H + 8.dp), contentAlignment = Alignment.CenterStart) { content() }
 }
 
 @Composable
@@ -462,3 +442,18 @@ fun Badge(text: String, modifier: Modifier) {
         FitText(text, where = "badge", style = FcType.tiny, color = FcColors.OnAccent, maxLines = 1)
     }
 }
+
+/** Notices shown in W2's bottom line, not over the viewfinder. */
+private val SIDE_NOTICES = setOf(NoticeKind.V11, NoticeKind.IMPORT_FAILED, NoticeKind.LUT_BAD, NoticeKind.LUT_ADDED)
+
+val VF_W: Dp = 552.dp
+val VF_H: Dp = 414.dp
+private val GAP = 16.dp
+private val BAR_H = 96.dp
+private val THUMB = 72.dp
+private const val FLASH_MS = 120L
+private const val FLY_MS = 350
+private const val NOTICE_MS = 3_000L
+private const val HINT_MS = 4_000L
+private const val SAVE_FAILED_MS = 5_000L
+private const val PERMISSION_POLL_MS = 1_000L

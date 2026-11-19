@@ -106,7 +106,7 @@ fun MainWindow(
     PicoTheme {
         Box(Modifier.fillMaxSize()) {
             if (page != null) {
-                Column(Modifier.fillMaxSize().padding(horizontal = 32.dp, vertical = 24.dp)) {
+                Column(Modifier.fillMaxSize().padding(24.dp)) {
                     if (page.showTitle) {
                         Text(page.label, fontSize = 28.sp, color = PicoTheme.colorScheme.labelPrimary)
                         Spacer(Modifier.height(16.dp))

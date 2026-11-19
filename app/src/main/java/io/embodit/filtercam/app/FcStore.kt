@@ -1,26 +1,30 @@
 package io.embodit.filtercam.app
 
 import android.content.Context
-import android.content.Intent
+import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import io.embodit.filtercam.R
+import io.embodit.filtercam.domain.AlbumNav
 import io.embodit.filtercam.domain.CamPerm
-import io.embodit.filtercam.domain.CamPerms
-import io.embodit.filtercam.domain.CameraFlow
-import io.embodit.filtercam.domain.CameraMasks
 import io.embodit.filtercam.domain.CubeError
 import io.embodit.filtercam.domain.FilterDef
 import io.embodit.filtercam.domain.Filters
 import io.embodit.filtercam.domain.Img
+import io.embodit.filtercam.domain.LensPolicy
 import io.embodit.filtercam.domain.LevelGate
 import io.embodit.filtercam.domain.Look
+import io.embodit.filtercam.domain.PermCard
 import io.embodit.filtercam.domain.RoomMode
+import io.embodit.filtercam.domain.ShotQueue
+import io.embodit.filtercam.domain.SideWindow
 import io.embodit.filtercam.domain.Stamp
 import io.embodit.filtercam.domain.StampFormat
 import io.embodit.filtercam.platform.Bitmaps
 import io.embodit.filtercam.platform.FcLog
+import io.embodit.filtercam.platform.GalleryItem
 import io.embodit.filtercam.platform.HelperActivity
 import io.embodit.filtercam.platform.LensController
 import io.embodit.filtercam.platform.PhotoRepo
@@ -31,21 +35,26 @@ import java.util.Calendar
 import java.util.Date
 import kotlin.random.Random
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * The one state holder of the process: the main window, the lens spot, the shot card, the room Stage and the debug
- * receiver all call these functions on the main thread (debug commands take the same paths as taps, profile D29).
- * Per-frame 3D work never goes through here; the room scene reports discrete events.
+ * The one state holder of the process: the camera window W1, the filter window W2, the room Stage and the debug receiver
+ * all call these functions on the main thread (debug commands take the same paths as taps, profile D29). Per-frame work
+ * (camera frames, 3D) never goes through [state]; frames go to [Renderer.live], the room scene reports discrete events.
+ *
+ * v0.2.0 (design round 4): the viewfinder is drawn inside W1 from read-back camera frames; whether its session runs is
+ * one rule ([LensPolicy], [syncLens]) checked after every change, instead of the open / close calls of v0.1.x.
  */
 object FcStore {
-    /** The viewfinder (SpatialML), see [LensController]. */
+    /** The read-back viewfinder session, see [LensController]. */
     interface LensHost {
         val isOpen: Boolean
 
@@ -53,26 +62,20 @@ object FcStore {
 
         fun close()
 
-        fun showPhoto(rgb: ByteArray)
-
-        fun showCamera(m: CameraMasks)
-
         fun pause(on: Boolean)
-
-        suspend fun still(): ByteArray?
     }
 
-    /** Opens / closes a system window by id (lent by the main window, which owns the navigator). */
+    /** Opens / closes system windows (lent by the camera window, which owns the navigator). */
     interface WindowHost {
-        fun openSpot(gen: Int)
+        fun openSide()
 
-        fun closeSpot()
+        fun closeSide()
 
         fun openStage()
 
         fun closeStage()
 
-        /** 「叫回面前」: the main window again where the system opens a new one (in front of the head), this one closed. */
+        /** 「叫回面前」: the camera window again where the system opens a new one (in front of the head), this one closed. */
         fun recallFront()
     }
 
@@ -81,16 +84,20 @@ object FcStore {
     private val _state = MutableStateFlow(FcState())
     val state: StateFlow<FcState> = _state.asStateFlow()
 
+    /** The picture held still after the shutter (S06 freeze) and then flown into the corner; also the thumbnail until the saved file loads. */
+    private val _shotPicture = MutableStateFlow<Bitmap?>(null)
+    val shotPicture: StateFlow<Bitmap?> = _shotPicture.asStateFlow()
+
     var lensHost: LensHost? = null
     var windowHost: WindowHost? = null
 
-    /** Closes the room Stage from inside it (the main window is closed while the room is on). */
+    /** Closes the room Stage from inside it (the camera window is closed while the room is on). */
     var stageCloser: (() -> Unit)? = null
 
-    /** The main window closed itself for room mode; the Stage opens it again when it ends. */
+    /** The camera window closed itself for room mode; the Stage opens it again when it ends. */
     @Volatile var hiddenHome: Pair<String, String?>? = null
 
-    /** Lifecycle of the main window as it reports it (ON_CREATE … ON_DESTROY, "never"). */
+    /** Lifecycle of the camera window as it reports it (ON_CREATE … ON_DESTROY, "never"). */
     val homeLife = MutableStateFlow("never")
 
     lateinit var renderer: Renderer
@@ -107,7 +114,10 @@ object FcStore {
     private var liveSeed = 3
     private var fixedSeed: Int? = null
 
-    /** The imported photo at 1024 x 768 (design S09) and the full-size picture a redo starts from. */
+    /** The look camera frames are rendered with (read on the frame thread). */
+    @Volatile private var liveLook: Look? = null
+
+    /** The imported photo at 1024 x 768 (design S09). */
     private var importImg: Img? = null
 
     /** Debug `hold --es state …` (design qaHooks, D36): a transition under 3 s stays until `release`. */
@@ -115,15 +125,20 @@ object FcStore {
         private set
     private val heldRelease = ArrayList<() -> Unit>()
 
-    /** Debug `readback --es mode ok|denied|fail|sessionLevel` (design qaHooks): a fake camera shutter on the emulator. */
+    /** Debug `readback --es mode ok|fail` (design qaHooks): ok = sample frames stand in for the camera on the emulator (log FAKE); fail = the next camera shot is not caught. */
     @Volatile var fakeReadback: String? = null
+        private set
+    private var fakeFeed: Job? = null
 
     private var noticeSerial = 0
-    private var cardSerial = 0
-    private var lensWaitingForSpot = false
+    private var thumbSerial = 0
 
-    @Volatile var spotGen = 0
-        private set
+    /** The camera window is started (not in the background): the session only runs then. */
+    private var windowInFront = false
+
+    /** The session ended by leaving (background, room, album/settings never close it): say 「取景回来了」 when frames come back. */
+    private var announceBack = false
+    private var lossesInARow = 0
 
     private val s: FcState
         get() = _state.value
@@ -144,11 +159,15 @@ object FcStore {
         var start = prefs.restore(FcState(isEmulator = isEmulator, luts = luts))
         if (Filters.of(start.filterId, luts)?.available != true) start = start.copy(filterId = Filters.F01.id)
         val missing = HelperActivity.missing(context)
-        start = start.copy(missingPerms = missing, permissionDenied = start.permissionDenied && missing.isNotEmpty(), blockedPerms = start.blockedPerms intersect missing, overlay = if (prefs.guideSeen()) null else Overlay.GUIDE)
+        // design r4 S00 / S01: a cold start goes to the camera, the permission card first if one is missing; the emulator
+        // with both permissions has no camera picture, so it starts on the sample (S01s)
+        val source = if (isEmulator && missing.isEmpty()) Source.SAMPLE else Source.CAMERA
+        start = start.copy(source = source, missingPerms = missing, permissionDenied = start.permissionDenied && missing.isNotEmpty(), blockedPerms = start.blockedPerms intersect missing)
         _state.value = start
-        FcLog.i("STATE ${start.stateId} init filter=${start.filterId} lang=${start.lang} emulator=$isEmulator luts=${luts.size} missing=${missing.map { it.name }}")
-        refreshPreview()
+        FcLog.i("STATE ${start.stateId} init filter=${start.filterId} source=${source.id} lang=${start.lang} emulator=$isEmulator luts=${luts.size} missing=${missing.map { it.name }}")
+        refreshLook()
         renderer.buildThumbs(renderer.allFilters(), stampTextFor(StampFormat.SHORT))
+        scope.launch { loadLatestThumb() }
     }
 
     private fun set(next: FcState, why: String) {
@@ -160,8 +179,9 @@ object FcStore {
         val visual =
             prev.previewFilter != next.previewFilter || prev.strength != next.strength || prev.stampOn != next.stampOn || prev.stampFormat != next.stampFormat ||
                 prev.compare != next.compare || prev.source != next.source || prev.sample != next.sample || prev.importName != next.importName ||
-                prev.lens.open != next.lens.open || prev.luts != next.luts || prev.missingPerms != next.missingPerms || prev.permissionDenied != next.permissionDenied || prev.blockedPerms != next.blockedPerms || prev.lang != next.lang
-        if (visual) refreshPreview()
+                prev.luts != next.luts || prev.lang != next.lang
+        if (visual) refreshLook()
+        syncLens(why)
     }
 
     fun t(id: Int, vararg args: Any): String {
@@ -172,7 +192,7 @@ object FcStore {
     }
 
     // =========================================================================================
-    // looks and the preview
+    // looks and the viewfinder picture
     // =========================================================================================
 
     fun stampTextFor(format: StampFormat, date: Date = Date()): String? {
@@ -188,7 +208,7 @@ object FcStore {
         return Look(d, renderer.lutOf(d), st.strength / 100f, seed, stamp, compare = st.compare)
     }
 
-    /** The picture of the current source at the preview size (4:3), or null for the camera. */
+    /** The picture of a photo source at [width] (4:3), or null for the camera. */
     private fun sourceImg(st: FcState, width: Int): Img? =
         when (st.source) {
             Source.SAMPLE -> renderer.sample(st.sample, width)
@@ -196,115 +216,213 @@ object FcStore {
             Source.CAMERA -> null
         }
 
-    private fun refreshPreview() {
+    /** The look changed: camera frames pick it up with the next frame; photo sources render once. */
+    private fun refreshLook() {
         val st = s
-        val hovering = st.hoverId != null
-        val lensOpen = st.lens.open
-        // the camera: the preview box shows the chosen filter on the sample (design H3), the lens gets the masks
-        val previewSrcSample = hovering || st.source == Source.CAMERA
-        renderer.requestPreview(
-            src = { if (previewSrcSample) renderer.sample(st.sample, Renderer.PREVIEW_W) else sourceImg(st, Renderer.PREVIEW_W) },
-            look = { lookOf(st, st.previewFilter, liveSeed) },
-        ) { img ->
-            if (!hovering && lensOpen && st.source != Source.CAMERA) {
-                val rgb = Bitmaps.rgbBytes(img, LensController.W, LensController.H)
-                main.post { lensHost?.showPhoto(rgb) }
-            }
+        // a LUT parses in up to ~1.3 s on first use: never on the main thread (the first-tap rule)
+        val gen = ++lookGen
+        scope.launch(Dispatchers.Default) {
+            val look = lookOf(st, st.previewFilter, liveSeed)
+            if (gen == lookGen) liveLook = look
         }
-        if (lensOpen && st.source == Source.CAMERA && !hovering) {
-            // the viewfinder says the same as the card on the page until both permissions are on (QA #3: it said "no
-            // camera"; D58: it said "camera" when SPATIAL_DATA was the one missing)
-            val prompt = st.permPrompt
-            if (prompt != null) showTextInLens(permText(prompt), "permission")
-            else if (st.isEmulator) showNoCameraInLens()
-            else scope.launch {
-                val m = withContext(Dispatchers.Default) { CameraMasks.of(lookOf(st, st.filterId, liveSeed), LensController.W, LensController.H) }
-                lensHost?.showCamera(m)
-            }
-        }
+        if (st.source != Source.CAMERA) renderer.requestPreview(src = { sourceImg(st, Renderer.PREVIEW_W) }, look = { lookOf(st, st.previewFilter, liveSeed) })
     }
 
-    /** S22: the viewfinder shows the "no camera" line as a still picture (design: 应用上传的占位 640×480). */
-    private fun showNoCameraInLens() = showTextInLens(t(io.embodit.filtercam.R.string.no_camera), "no camera")
+    @Volatile private var lookGen = 0
 
-    // ---- the camera permissions (profile D58): each named on its own
+    /** A read-back camera frame (640 x 480 RGB, any thread): through the current look into the viewfinder. */
+    fun onCameraFrame(rgb: ByteArray) {
+        val look = liveLook ?: return
+        renderer.renderLive(rgb, LensController.W, LensController.H, look)
+        if (!s.lens.live) main.post { lensLive() }
+    }
 
-    /** A permission's name as the app says it ([settings]: as PICO OS Settings lists it; the Chinese text names both 空间数据 and Spatial Data). */
+    // ---- the camera permissions (profile D58, design r4 S00 – S00c): each named on its own, Spatial Data first
+
+    /** A permission's name as the app says it ([settings]: as PICO OS Settings lists it). */
     fun permName(p: CamPerm, settings: Boolean = false): String =
         when (p) {
-            CamPerm.CAMERA -> t(io.embodit.filtercam.R.string.perm_camera)
-            CamPerm.SPATIAL_DATA -> t(if (settings) io.embodit.filtercam.R.string.perm_spatial_settings else io.embodit.filtercam.R.string.perm_spatial)
+            CamPerm.CAMERA -> t(R.string.perm_camera)
+            CamPerm.SPATIAL_DATA -> t(if (settings) R.string.perm_spatial_settings else R.string.perm_spatial)
         }
 
-    private fun permNames(ps: List<CamPerm>, settings: Boolean = false): String = ps.joinToString(t(io.embodit.filtercam.R.string.perm_and)) { permName(it, settings) }
+    fun permWhy(p: CamPerm): String = t(if (p == CamPerm.SPATIAL_DATA) R.string.perm_spatial_why else R.string.perm_camera_why)
 
-    /** The card's sentence: which permission is missing, and for one refused for good, where it is in Settings. */
-    fun permText(p: CamPerms.Prompt): String {
-        val main =
-            when (p.kind) {
-                CamPerms.Kind.NEED -> t(io.embodit.filtercam.R.string.cam_perm_need, permNames(p.missing))
-                CamPerms.Kind.DENIED -> t(io.embodit.filtercam.R.string.cam_perm_denied, permNames(p.askable))
-                CamPerms.Kind.BLOCKED -> t(io.embodit.filtercam.R.string.cam_perm_blocked, permNames(p.missing))
-            }
-        val where = if (p.blocked.isNotEmpty()) "\n" + t(io.embodit.filtercam.R.string.cam_perm_where, permNames(p.blocked, settings = true)) else ""
-        return main + where
-    }
-
-    /** One status per permission, e.g. 「相机：已开 · 空间数据：没开」. */
-    fun permStatus(missing: Set<CamPerm>): String =
-        CamPerm.values().joinToString("  ·  ") { t(if (it in missing) io.embodit.filtercam.R.string.perm_off else io.embodit.filtercam.R.string.perm_on, permName(it)) }
-
-    /** Lines that fit [maxW]: kept paragraphs, broken at spaces (English) or anywhere (Chinese). */
-    private fun wrapLines(text: String, maxW: Float, width: (String) -> Float): List<String> =
-        text.split('\n').flatMap { para ->
-            val out = mutableListOf<String>()
-            var line = ""
-            val tokens = Regex("""\S+\s*|\s+""").findAll(para).map { it.value }.flatMap { tok -> if (tok.any { it.code > 0x2E80 }) tok.map { it.toString() } else listOf(tok) }
-            for (tok in tokens) {
-                if (line.isNotEmpty() && width((line + tok).trimEnd()) > maxW) {
-                    out += line.trimEnd()
-                    line = tok.trimStart()
-                } else line += tok
-            }
-            if (line.isNotBlank()) out += line.trimEnd()
-            out
-        }
-
-    /** One line of text on the viewfinder's panel (no camera on the emulator, the camera permissions missing). */
-    private fun showTextInLens(text: String, what: String) {
+    /** 「开始授权」 / 「再问一次」: the system dialogs one by one, Spatial Data first (only the missing ones). */
+    fun startPermissions(why: String) {
+        val missing = missingNow()
+        if (missing.isEmpty()) return permissionRecheck("ask: already granted")
+        fakeMissing?.let { return permissionResult(it, s.blockedPerms) }
+        FcLog.i("PERMISSION ask ${PermCard.askOrder(missing, s.blockedPerms).map { it.name }} ($why)")
+        set(s.copy(permWaiting = false), "permission start ($why)")
         val ctx = appContext ?: return
-        scope.launch {
-            val rgb =
-                withContext(Dispatchers.Default) {
-                    val bmp = android.graphics.Bitmap.createBitmap(LensController.W, LensController.H, android.graphics.Bitmap.Config.ARGB_8888)
-                    val c = android.graphics.Canvas(bmp)
-                    c.drawColor(0xFF101216.toInt())
-                    val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFF2F4F7.toInt(); textSize = 26f; textAlign = android.graphics.Paint.Align.CENTER }
-                    val words = wrapLines(text, LensController.W - 80f) { paint.measureText(it) }
-                    words.forEachIndexed { i, line -> c.drawText(line, LensController.W / 2f, LensController.H / 2f + (i - words.size / 2f) * 36f + 10f, paint) }
-                    Bitmaps.rgbBytes(Bitmaps.toImg(bmp), LensController.W, LensController.H)
+        HelperActivity.launch(ctx, HelperActivity.MODE_PERMISSION)
+    }
+
+    /** The helper is about to show the dialog for [p] (S00a 「正在问 n/2」). */
+    fun permissionAsking(p: CamPerm?) = set(s.copy(asking = p), "permission asking ${p?.name}")
+
+    /** 「去设置」: this app's page in system settings; the card waits (S00c) and re-checks every second. */
+    fun openPermissionSettings() {
+        FcLog.i("PERMISSION open settings")
+        set(s.copy(permWaiting = true), "permission wait settings")
+        if (fakeMissing == null) appContext?.let { HelperActivity.openAppSettings(it) }
+    }
+
+    /** Debug `perm --es step …`: the card's states without system dialogs (null = the real permissions). */
+    @Volatile var fakeMissing: Set<CamPerm>? = null
+
+    /** CAMERA and SPATIAL_DATA, each checked on its own (profile D58). */
+    private fun missingNow(): Set<CamPerm> = fakeMissing ?: appContext?.let { HelperActivity.missing(it) } ?: s.missingPerms
+
+    /**
+     * Resume, focus, or the card's 1 s poll (Shared Space opens Settings beside the window, no pause): pick up each
+     * permission granted or taken away there. Both on: the session starts right here ([syncLens]), no restart.
+     */
+    fun permissionRecheck(why: String) {
+        val now = missingNow()
+        if (now == s.missingPerms) return
+        FcLog.i("PERM recheck missing=${now.map { it.name }} ${if (now.isEmpty()) "granted" else ""} ($why)")
+        set(s.copy(missingPerms = now, permissionDenied = s.permissionDenied && now.isNotEmpty(), blockedPerms = s.blockedPerms intersect now, permWaiting = s.permWaiting && now.isNotEmpty()), "permission recheck ($why)")
+    }
+
+    /** The dialogs answered: [missing] is what is still off, [blocked] the ones refused for good (USER_FIXED included). */
+    fun permissionResult(missing: Set<CamPerm>, blocked: Set<CamPerm>) {
+        val granted = missing.isEmpty()
+        val nextBlocked = (s.blockedPerms + blocked) intersect missing
+        set(
+            s.copy(missingPerms = missing, permissionDenied = !granted, blockedPerms = nextBlocked, asking = null, permWaiting = false),
+            "permission ${if (granted) "granted" else "missing"} missing=${missing.map { it.name }} blocked=${nextBlocked.map { it.name }}",
+        )
+    }
+
+    // =========================================================================================
+    // the viewfinder session (design r4 container.lifecycle, S01 / S21 / S22 / S24 / S25)
+    // =========================================================================================
+
+    private var syncing = false
+
+    /** Opens, pauses or closes the read-back session so it matches [LensPolicy] (called after every change). */
+    private fun syncLens(why: String) {
+        if (syncing) return
+        syncing = true
+        try {
+            val st = s
+            val fake = (fakeReadback == "ok" || fakeReadback == "fail") && st.isEmulator
+            val want = LensPolicy.want(st.source == Source.CAMERA, st.permissionGranted, !st.isEmulator || fake, windowInFront, st.room != null, st.lensError != null, st.page == Pages.SHOOT)
+            val host = lensHost
+            val running = if (fake) fakeFeed?.isActive == true else host?.isOpen == true
+            when (want) {
+                LensPolicy.Want.CLOSED ->
+                    if (running || st.lens.open) {
+                        stopLens()
+                        if (st.source == Source.CAMERA && st.permissionGranted && st.lensError == null) announceBack = true
+                        set(s.copy(lens = LensUi()), "lens closed ($why)")
+                    }
+                LensPolicy.Want.OPEN, LensPolicy.Want.PAUSED -> {
+                    if (!running && !st.lens.reopening) {
+                        if (fake) startFakeFeed() else if (host != null) host.open() else return set(s.copy(lensError = "no SpatialML host"), "lens unavailable")
+                        set(s.copy(lens = LensUi(open = true, opening = true)), "lens open ($why)")
+                    }
+                    host?.pause(want == LensPolicy.Want.PAUSED)
+                    fakePaused = want == LensPolicy.Want.PAUSED
                 }
-            lensHost?.showPhoto(rgb)
-            FcLog.i("LENS $what placeholder (${ctx.packageName})")
+            }
+        } finally {
+            syncing = false
         }
     }
 
-    // =========================================================================================
-    // camera page controls (design T1 – T7)
-    // =========================================================================================
-
-    fun pageSelected(page: String) = set(s.copy(page = page, quitAsked = false, hoverId = null), "page $page")
-
-    /** 「更多」 / 「收起」 on the camera page (design round 3, S29). */
-    fun moreToggled(open: Boolean = !s.moreOpen) = set(s.copy(moreOpen = open, hoverId = null), "more $open")
-
-    /** ‹ › on the camera page: the v1 filters that are available plus the imported LUTs, round and round (v1.1 cards skipped). */
-    fun filterStep(step: Int, why: String = "button") {
-        val ids = (Filters.builtIn.filter { it.available } + s.luts.map { Filters.lutFilter(it) }).map { it.id }
-        if (ids.isEmpty()) return
-        val i = ids.indexOf(s.filterId).coerceAtLeast(0)
-        filterChosen(ids[Math.floorMod(i + step, ids.size)], why)
+    private fun stopLens() {
+        lensHost?.close()
+        fakeFeed?.cancel()
+        fakeFeed = null
+        renderer.clearLive()
     }
+
+    @Volatile private var fakePaused = false
+
+    /** Emulator, debug `readback --es mode ok`: the sample photo stands in for camera frames at ~20 Hz (above the target, so the render ceiling shows), same path after the read-back. */
+    private fun startFakeFeed() {
+        fakeFeed?.cancel()
+        FcLog.i("READBACK FAKE feed on (emulator: the sample stands in for the camera frames)")
+        fakeFeed =
+            scope.launch {
+                val frame = withContext(Dispatchers.Default) { Bitmaps.rgbBytes(renderer.sample(s.sample, LensController.W), LensController.W, LensController.H) }
+                while (isActive) {
+                    if (!fakePaused) onCameraFrame(frame)
+                    delay(FAKE_FRAME_MS)
+                }
+            }
+    }
+
+    fun lensLive() {
+        if (!s.lens.open || s.lens.live) return
+        lossesInARow = 0
+        val n =
+            when {
+                prefs?.hintSeen() == false -> notice(NoticeKind.HINT).also { prefs?.setHintSeen(true) }
+                announceBack || s.lens.reopening -> notice(NoticeKind.LENS_BACK)
+                else -> s.notice
+            }
+        announceBack = false
+        set(s.copy(lens = s.lens.copy(opening = false, live = true, reopening = false), notice = n), "lens live")
+    }
+
+    /** S25: the session died; reopen once by itself, a second loss in a row ends on S21. */
+    fun lensLost(why: String) {
+        FcLog.w("LENS lost $why")
+        lossesInARow++
+        stopLens()
+        announceBack = true
+        if (!LensPolicy.afterLoss(lossesInARow)) return lensFailed("lost twice: $why")
+        set(s.copy(lens = LensUi(open = true, opening = true, reopening = true), notice = notice(NoticeKind.LENS_LOST)), "lens lost, reopening")
+        main.postDelayed({
+            val go: () -> Unit = {
+                if (s.lens.reopening) {
+                    set(s.copy(lens = LensUi()), "lens reopen")
+                }
+            }
+            if (held == "lost") heldRelease.add(go) else go()
+        }, REOPEN_GAP_MS)
+    }
+
+    fun lensFailed(reason: String) {
+        FcLog.w("LENS failed $reason")
+        stopLens()
+        set(s.copy(lens = LensUi(), lensError = reason), "lens failed")
+    }
+
+    /** S21 「再试一次」. */
+    fun lensRetry() {
+        lossesInARow = 0
+        set(s.copy(lensError = null), "lens retry")
+    }
+
+    // =========================================================================================
+    // camera window controls (design T1 – T7)
+    // =========================================================================================
+
+    fun pageSelected(page: String) {
+        if (page == Pages.GALLERY) return albumOpen("tab")
+        set(s.copy(page = page, quitAsked = false, hoverId = null, albumDeleteAsk = false, moreOpen = if (page == Pages.SHOOT) s.moreOpen else false), "page $page")
+    }
+
+    /** Whether W2 is on screen (design W2.visibility); the camera window opens / closes it to match. */
+    val sideShown: Boolean
+        get() = s.let { SideWindow.shown(it.sideWanted, it.page == Pages.SHOOT, it.permissionCard, it.room != null, it.quitAsked) }
+
+    /** W1 「滤镜」: fold / unfold W2 (unfolded at Placement.right(W1) again). */
+    fun sideToggled(open: Boolean = !sideShown) = set(s.copy(sideWanted = open, moreOpen = false, hoverId = null, page = Pages.SHOOT), "side ${if (open) "open" else "fold"}")
+
+    /** W2 closed from outside (the window's ×): folded, W1 「滤镜」 brings it back. */
+    fun sideClosedBySystem() {
+        if (!s.sideWanted) return
+        set(s.copy(sideWanted = false, moreOpen = false, hoverId = null), "side closed by its ×")
+    }
+
+    /** W2 「更多」 / 「收起」 (S29). */
+    fun moreToggled(open: Boolean = !s.moreOpen) = set(s.copy(moreOpen = open, hoverId = null), "more $open")
 
     fun filterChosen(id: String, why: String = "tap") {
         val d = Filters.of(id, s.luts) ?: return FcLog.w("CMD fail filter $id unknown")
@@ -353,32 +471,22 @@ object FcStore {
         set(s.copy(sample = name, source = if (s.source == Source.CAMERA) s.source else Source.SAMPLE), "sample $name")
     }
 
-    /** Design T4: 相机 opens the viewfinder first (camera only while it is open); 我的照片 goes through the picker. */
-    /** [auto]: the start-up camera on the headset; it asks only if the user has never refused (no dialog on every start). */
-    fun sourceSelected(src: Source, auto: Boolean = false) {
+    /** Design T4 (W2 更多 · 拍什么, the card's 「先用示例照片玩」, S22 「用示例照片」, S01s 「要拍真房间：开权限」). */
+    fun sourceSelected(src: Source) {
         when (src) {
-            Source.SAMPLE -> {
-                cameraWanted = false
-                set(s.copy(source = Source.SAMPLE, notice = null), "source sample")
-            }
-            Source.CAMERA -> {
-                cameraWanted = true
-                set(s.copy(source = Source.CAMERA, notice = null), "source camera")
-                // ask before the camera is used (2026-11-14 headset: the app never asked); the shutter's read-back needs it
-                val ask = missingNow().isNotEmpty() && !s.permissionBlocked && !(auto && s.permissionDenied)
-                // QA #4 q4-1: a session created while the dialog is up (the spot window never gets focus) lands in the middle
-                // of the main window and stays there; so with a dialog coming the viewfinder opens after the answer instead
-                // (CameraFlow.afterAnswer, once the window is back in front and the spot can take focus)
-                if (CameraFlow.openWithSource(s.lens.open, ask)) openLens("camera source")
-                if (ask) askCamera(if (auto) "camera source (start)" else "camera source")
-            }
+            Source.SAMPLE -> set(s.copy(source = Source.SAMPLE, notice = null, permWaiting = false, permReview = false, page = Pages.SHOOT), "source sample")
+            Source.CAMERA -> set(s.copy(source = Source.CAMERA, notice = null, page = Pages.SHOOT, lensError = null), "source camera")
             Source.IMPORT -> {
-                cameraWanted = false
                 if (importImg != null && s.importName != null) set(s.copy(source = Source.IMPORT, notice = null), "source import (kept)")
                 pickPhoto()
             }
         }
     }
+
+    /** Settings 「重看权限说明」: the camera page with the permission card (both on: the card says so, S00 with ✓ ✓). */
+    fun permReviewOpen() = set(s.copy(page = Pages.SHOOT, source = Source.CAMERA, quitAsked = false, permReview = true), "permission card again")
+
+    fun permReviewDone() = set(s.copy(permReview = false), "permission card ok")
 
     fun pickPhoto() {
         val ctx = appContext ?: return
@@ -390,14 +498,11 @@ object FcStore {
     @Volatile var failNextImport = false
 
     fun photoPicked(uri: Uri?) {
-        if (uri == null) {
-            FcLog.i("EVENT picker cancelled")
-            return
-        }
+        if (uri == null) return FcLog.i("EVENT picker cancelled")
         importFrom(uri, null)
     }
 
-    /** Loads a picture as the 「我的照片」 source (picker, gallery 「用这张当素材」, shot card 「换个滤镜重出」). */
+    /** Loads a picture as the 「我的照片」 source (picker, the album's 「当素材拍」). */
     fun importFrom(uri: Uri, name: String?) {
         scope.launch {
             val r =
@@ -428,103 +533,23 @@ object FcStore {
 
     private fun notice(kind: NoticeKind, arg: String? = null) = Notice(kind, arg, ++noticeSerial)
 
-    fun noticeDismissed() = set(s.copy(notice = null), "notice dismissed")
+    fun noticeDismissed(serial: Int) {
+        if (s.notice?.serial == serial) set(s.copy(notice = null), "notice dismissed")
+    }
 
     // =========================================================================================
-    // the viewfinder (T3, S02 / S21 / S22 / S25)
-    // =========================================================================================
-
-    fun lensButton() =
-        if (s.lens.open) {
-            cameraWanted = false
-            closeLens("button", toSample = true)
-        } else openLens("button")
-
-    fun openLens(why: String) {
-        if (s.lens.open || s.room != null) return
-        if (lensHost == null) return set(s.copy(lensError = "no SpatialML host"), "lens unavailable")
-        set(s.copy(lens = LensUi(open = true, opening = true), lensError = null, notice = null), "lens open ($why)")
-        val spot = windowHost
-        if (spot == null) {
-            lensHost?.open()
-            return
-        }
-        lensWaitingForSpot = true
-        spot.openSpot(++spotGen)
-        // the spot window reports focus within ~1 s; without it the lens still opens (where the system puts it)
-        main.postDelayed({ lensSpotReady("no focus after $SPOT_WAIT_MS ms") }, SPOT_WAIT_MS)
-    }
-
-    /** The spot window is focused (or the wait is over): now the session, so its container lands in front of the spot. */
-    fun lensSpotReady(why: String) {
-        if (!lensWaitingForSpot || !s.lens.open) return
-        lensWaitingForSpot = false
-        FcLog.i("LENS spot ready ($why)")
-        lensHost?.open()
-    }
-
-    fun lensSpotGone(gen: Int) {
-        if (gen == spotGen && s.lens.open && !s.lens.reopening) closeLens("spot window closed", toSample = true)
-    }
-
-    fun lensReady() {
-        if (!s.lens.open) return
-        set(s.copy(lens = s.lens.copy(opening = false)), "lens ready")
-        refreshPreview()
-    }
-
-    fun lensLive() {
-        if (!s.lens.open || s.lens.live) return
-        set(s.copy(lens = s.lens.copy(opening = false, live = true, reopening = false)), "lens live")
-    }
-
-    /**
-     * Closes the viewfinder (design T3): cancel the loop, destroy the session on its own thread, close the spot. The
-     * camera source goes back to the sample with a line (design R2-2).
-     */
-    fun closeLens(why: String, toSample: Boolean, kind: NoticeKind = NoticeKind.LENS_CLOSED_SAMPLE) {
-        if (!s.lens.open) return
-        lensWaitingForSpot = false
-        lensHost?.close()
-        windowHost?.closeSpot()
-        // D58: while a permission is missing the camera stays picked, so the card keeps naming it and the picture starts
-        // once it is on (closed by its own button: back to the sample as before)
-        val wasCamera = s.source == Source.CAMERA && !(cameraWanted && !s.permissionGranted)
-        val n = if (wasCamera && toSample) notice(kind) else if (kind != NoticeKind.LENS_CLOSED_SAMPLE) notice(kind) else s.notice
-        set(s.copy(lens = LensUi(), source = if (wasCamera) Source.SAMPLE else s.source, notice = n), "lens closed ($why)")
-    }
-
-    fun lensLost(why: String) {
-        FcLog.w("LENS lost $why")
-        closeLens("lost: $why", toSample = true, kind = NoticeKind.LENS_LOST)
-    }
-
-    fun lensFailed(reason: String) {
-        FcLog.w("LENS failed $reason")
-        lensWaitingForSpot = false
-        lensHost?.close()
-        windowHost?.closeSpot()
-        val keepCamera = cameraWanted && !s.permissionGranted
-        set(s.copy(lens = LensUi(), lensError = reason, source = if (s.source == Source.CAMERA && !keepCamera) Source.SAMPLE else s.source), "lens failed")
-    }
-
-    fun lensErrorOk() = set(s.copy(lensError = null), "lens error ok")
-
-    private const val SPOT_WAIT_MS = 3_000L
-
-    // =========================================================================================
-    // the shutter (T5, S05 – S08f, S26)
+    // the shutter (T5, S05 / S06 / S08 / S08f / S26): flash, freeze, fly into the corner; no card
     // =========================================================================================
 
     val shutterEnabled: Boolean
-        get() = s.room == null && !s.reading && !s.flashing && !(s.noCamera && fakeReadback == null) && !s.lens.reopening
+        get() = s.let { it.room == null && it.page == Pages.SHOOT && ShotQueue.canShoot(it.saving, it.flashing) && !it.permissionCard && it.lensError == null && (!it.noCamera || fakeReadback != null) }
 
     fun shutterPressed(why: String = "tap") {
         if (s.countdown != null) {
             set(s.copy(countdown = null), "countdown cancelled ($why)")
             return
         }
-        if (!shutterEnabled) return FcLog.i("EVENT shutter ignored ($why) state=${s.stateId}")
+        if (!shutterEnabled) return FcLog.i("EVENT shutter ignored ($why) state=${s.stateId} saving=${s.saving}")
         if (s.timerOn) countdown(3) else fire(why)
     }
 
@@ -546,36 +571,51 @@ object FcStore {
 
     private fun fire(why: String) {
         val st = s
-        FcLog.i("SHUTTER $why source=${st.source.id} filter=${st.filterId}")
-        if (st.source == Source.CAMERA) return cameraShutter()
-        val src = if (st.source == Source.SAMPLE) renderer.sample(st.sample, 1024) else importImg ?: return
         val look = lookOf(st, st.filterId, shotSeed())
+        FcLog.i("SHUTTER $why source=${st.source.id} filter=${st.filterId}")
+        if (st.source == Source.CAMERA) {
+            // the frame on screen is the frame saved (design r4: read-back mode, same engine): the newest read-back frame
+            val raw = renderer.live.value?.raw
+            if (raw == null || fakeReadback == "fail") {
+                FcLog.w("READBACK no frame for the shutter (${if (raw == null) "no frame yet" else "debug fail"})")
+                set(s.copy(notice = notice(NoticeKind.READ_FAILED)), "read-back failed (S08f)")
+                return
+            }
+            play(SoundBank.shutter(look.filter.sound))
+            scope.launch {
+                val shot = withContext(Dispatchers.Default) { renderer.renderFull(raw, look) }
+                flashAndFly(Bitmaps.toBitmap(shot))
+                saveShot(shot, raw, look)
+            }
+            return
+        }
+        val src = (if (st.source == Source.SAMPLE) renderer.sample(st.sample, 1024) else importImg) ?: return
         play(SoundBank.shutter(look.filter.sound))
-        flash()
+        // the picture on screen freezes at once; the 1024 version renders meanwhile
+        flashAndFly(renderer.preview.value)
         scope.launch {
             val shot = withContext(Dispatchers.Default) { renderer.renderFull(src, look) }
-            saveShot(shot, raw = null, look)
+            saveShot(shot, null, look)
         }
     }
 
-    /** White flash + frozen frame for 0.8 s (design L3 / S06): the live picture pauses meanwhile. */
-    private fun flash() {
-        set(s.copy(flashing = true), "flash")
-        lensHost?.pause(true)
+    /** S06: white flash 120 ms + frozen frame 300 ms, then the window flies [picture] into the thumbnail (350 ms). */
+    private fun flashAndFly(picture: Bitmap?) {
+        _shotPicture.value = picture
+        set(s.copy(flashing = true, saving = s.saving + 1, thumb = ShotThumb(++thumbSerial)), "flash")
         main.postDelayed({
-            val end: () -> Unit = {
-                lensHost?.pause(false)
-                set(s.copy(flashing = false), "flash end")
-            }
+            val end: () -> Unit = { set(s.copy(flashing = false), "flash end (fly)") }
             if (held == "flash") heldRelease.add(end) else end()
-        }, FLASH_MS)
+        }, FLASH_MS + FREEZE_MS)
     }
 
     private suspend fun saveShot(shot: Img, raw: Img?, look: Look) {
+        if (held == "reading") while (held == "reading") delay(100)
         val st = s
         val stamp = photos.stamp()
         val id = look.filter.id.replace(':', '_')
         val comment = "FilterCam filter=${look.filter.id} strength=${(look.strength * 100).toInt()} seed=${look.seed}"
+        val serial = thumbSerial
         val r =
             withContext(Dispatchers.IO) {
                 runCatching {
@@ -587,210 +627,72 @@ object FcStore {
         r.onSuccess { (uri, rawUri) ->
             play(SoundBank.Cue.CHIME)
             FcLog.i("SAVE ok $uri ${shot.w}x${shot.h} raw=$rawUri")
-            val card = ShotCard(CardKind.SAVED, uri.toString(), rawUri?.toString(), look.filter.id, shot.w, shot.h, rawUri != null, serial = ++cardSerial)
             pendingRetry = null
-            set(s.copy(card = card, lastShotUri = uri.toString(), galleryTick = s.galleryTick + 1, reading = false), "saved")
+            val thumb = if (s.thumb?.serial == serial) ShotThumb(serial, uri.toString()) else s.thumb
+            set(s.copy(saving = (s.saving - 1).coerceAtLeast(0), thumb = thumb, galleryTick = s.galleryTick + 1), "saved")
         }.onFailure {
             FcLog.e("SAVE failed: $it", it)
             pendingRetry = { scope.launch { saveShot(shot, raw, look) } }
-            set(s.copy(card = ShotCard(CardKind.SAVE_FAILED, filterId = look.filter.id, serial = ++cardSerial), reading = false), "save failed")
+            set(s.copy(saving = (s.saving - 1).coerceAtLeast(0), thumb = s.thumb?.copy(failed = true), notice = notice(NoticeKind.SAVE_FAILED)), "save failed (S26)")
         }
     }
 
     private var pendingRetry: (() -> Unit)? = null
 
-    /** Camera shutter: permission card first (S07), then the read-back (S08). Fake on the emulator via `readback`. */
-    private fun cameraShutter() {
-        val st = s
-        val fake = fakeReadback
-        if (fake == "denied" || (st.permissionDenied && !st.permissionGranted && fake == null)) {
-            set(s.copy(card = ShotCard(CardKind.VIEW_ONLY, filterId = st.filterId, serial = ++cardSerial)), "view only")
-            return
-        }
-        if (!st.permissionGranted) {
-            set(s.copy(overlay = Overlay.PERMISSION), "permission card")
-            return
-        }
-        readBack()
-    }
-
-    fun permissionAllow() {
-        set(s.copy(overlay = null), "permission allow")
-        val fake = fakeReadback
-        if (fake != null) return permissionResult(if (fake == "denied") CamPerm.ALL else emptySet(), emptySet())
-        permissionFor = "shutter"
-        val ctx = appContext ?: return
-        askingCamera = true
-        HelperActivity.launch(ctx, HelperActivity.MODE_PERMISSION)
-    }
-
-    /** What the pending CAMERA request is for: "shutter" (S07, read back after it) or "source" (camera picked, nothing after). */
-    private var permissionFor: String? = null
-
-    /** CAMERA and SPATIAL_DATA, each checked on its own now (profile D58). */
-    private fun missingNow(): Set<CamPerm> = appContext?.let { HelperActivity.missing(it) } ?: s.missingPerms
-
-    /** The camera was picked (by the user, or at start on the headset) and not put away: start it once permissions allow. */
-    private var cameraWanted = false
-
-    /** The system dialog for the missing permissions (「授权」 / 「再问一次」 on the preview go here too). */
-    fun askCamera(why: String) {
-        if (missingNow().isEmpty()) return permissionRecheck("ask: already granted")
-        permissionFor = "source"
-        FcLog.i("PERMISSION ask ($why)")
-        val ctx = appContext ?: return
-        askingCamera = true
-        HelperActivity.launch(ctx, HelperActivity.MODE_PERMISSION)
-    }
-
-    /** 「去设置」 after a refusal: the app's page in system settings; [permissionRecheck] on the way back. */
-    fun openPermissionSettings() {
-        FcLog.i("PERMISSION open settings")
-        appContext?.let { HelperActivity.openAppSettings(it) }
-    }
-
-    /**
-     * The main window resumed (maybe back from Settings), or the card's poll: pick up each permission granted or taken
-     * away there. Both on and the camera wanted: the picture starts right here, no restart (profile D58).
-     */
-    fun permissionRecheck(why: String) {
-        val now = missingNow()
-        if (now == s.missingPerms) return
-        val wasMissing = s.missingPerms.isNotEmpty()
-        set(s.copy(missingPerms = now, permissionDenied = s.permissionDenied && now.isNotEmpty(), blockedPerms = s.blockedPerms intersect now), "permission recheck missing=${now.map { it.name }} ($why)")
-        permissionsMaybeComplete(wasMissing, why)
-    }
-
-    private fun permissionsMaybeComplete(wasMissing: Boolean, why: String) {
-        val st = s
-        val action = CameraFlow.onPermissionsComplete(wasMissing, st.permissionGranted, cameraWanted, st.lens.open, st.page == Pages.SHOOT, st.room != null)
-        if (action == CameraFlow.Complete.NONE) return
-        if (st.source != Source.CAMERA) set(s.copy(source = Source.CAMERA, notice = null), "source camera (permissions on)")
-        if (action == CameraFlow.Complete.OPEN) return openLens("permissions on ($why)")
-        // the session was made without the permission: make it again so the camera frames come through (design N16, S07r)
-        set(s.copy(lens = s.lens.copy(reopening = true, live = false)), "lens reopen (permissions on, $why)")
-        lensHost?.close()
-        main.postDelayed({ if (s.lens.open) lensHost?.open() }, REOPEN_GAP_MS)
-    }
-
-    fun permissionNotNow() = set(s.copy(overlay = null, permissionDenied = true, card = ShotCard(CardKind.VIEW_ONLY, filterId = s.filterId, serial = ++cardSerial)), "permission not now")
-
-    /** The dialog answered: [missing] is what is still off, [blocked] the ones refused for good (USER_FIXED included). */
-    fun permissionResult(missing: Set<CamPerm>, blocked: Set<CamPerm>) {
-        val forSource = permissionFor == "source"
-        permissionFor = null
-        askingCamera = false
-        val granted = missing.isEmpty()
-        val nextBlocked = (s.blockedPerms + blocked) intersect missing
-        val names = "missing=${missing.map { it.name }} blocked=${nextBlocked.map { it.name }}"
-        if (forSource) {
-            // camera picked: nothing to read back yet, only remember the answer (the preview names what is still off)
-            set(s.copy(missingPerms = missing, permissionDenied = !granted, blockedPerms = nextBlocked), "permission ${if (granted) "granted" else "denied"} (camera source) $names")
-            reopenAfterAnswer()
-            return
-        }
-        if (!granted) {
-            set(s.copy(missingPerms = missing, permissionDenied = true, blockedPerms = nextBlocked, card = ShotCard(CardKind.VIEW_ONLY, filterId = s.filterId, serial = ++cardSerial)), "permission denied $names")
-            return
-        }
-        set(s.copy(missingPerms = emptySet(), permissionDenied = false, blockedPerms = emptySet()), "permission granted")
-        // design N16: if the permission only counts for sessions created after it, destroy and create again (S07r)
-        if (fakeReadback == "sessionLevel" || (!s.isEmulator && SESSION_LEVEL_PERMISSION)) reopenThenRead() else readBack()
-    }
-
-    private fun reopenThenRead() {
-        set(s.copy(lens = s.lens.copy(reopening = true, live = false)), "lens reopen (S07r)")
-        lensHost?.close()
-        main.postDelayed({
-            val go: () -> Unit = {
-                lensHost?.open()
-                main.postDelayed({ readBack() }, REOPEN_MS)
-            }
-            if (held == "reopen") heldRelease.add(go) else go()
-        }, 600L)
-    }
-
-    private fun readBack() {
-        val st = s
-        set(s.copy(reading = true, lens = s.lens.copy(reopening = false)), "reading (S08)")
-        val look = lookOf(st, st.filterId, shotSeed())
-        play(SoundBank.shutter(look.filter.sound))
-        lensHost?.pause(true)
-        scope.launch {
-            if (held == "reading") {
-                while (held == "reading") delay(100)
-            }
-            val fake = fakeReadback
-            val raw: Img? =
-                if (fake != null) {
-                    FcLog.i("READBACK FAKE mode=$fake (emulator: the sample stands in for the camera frame)")
-                    if (fake == "fail") null else renderer.sample(st.sample, LensController.W)
-                } else lensHost?.still()?.let { Bitmaps.fromRgb(it, LensController.W, LensController.H) }
-            lensHost?.pause(false)
-            if (raw == null) {
-                set(s.copy(reading = false, card = ShotCard(CardKind.READ_FAILED, filterId = st.filterId, serial = ++cardSerial)), "read-back failed")
-                return@launch
-            }
-            val shot = withContext(Dispatchers.Default) { renderer.renderFull(raw, look) }
-            saveShot(shot, raw, look)
-        }
-    }
-
-    // ---- the shot card (P4)
-
-    fun cardAgain() = set(s.copy(card = null), "card closed (again)")
-
-    fun cardOk() = set(s.copy(card = null), "card ok")
-
-    fun cardRetry() {
-        val r = pendingRetry ?: return cardOk()
-        set(s.copy(card = null), "save retry")
+    /** S26 toast 「再试一次」. */
+    fun saveRetry() {
+        val r = pendingRetry ?: return
+        pendingRetry = null
+        set(s.copy(saving = s.saving + 1, notice = null, thumb = s.thumb?.copy(failed = false)), "save retry")
         r()
     }
 
-    fun cardGrant() {
-        val ctx = appContext ?: return
-        set(s.copy(card = null), "card grant")
-        if (fakeReadback != null) return permissionResult(emptySet(), emptySet())
-        HelperActivity.openAppSettings(ctx)
+    /** The thumbnail at start: the newest photo in the album, if any. */
+    private suspend fun loadLatestThumb() {
+        val first = withContext(Dispatchers.IO) { albumItems().firstOrNull() } ?: return
+        if (s.thumb == null) set(s.copy(thumb = ShotThumb(0, first.uri)), "thumb newest")
     }
 
-    fun cardDeleteAsk(on: Boolean) = s.card?.let { set(s.copy(card = it.copy(deleteAsked = on)), "delete ask $on") }
+    // =========================================================================================
+    // the album (design W1.pages.album, S12 / S12e / S13)
+    // =========================================================================================
 
-    fun cardDeleteConfirm() {
-        val c = s.card ?: return
+    /** Filtered shots, newest first (originals stay in the system gallery, design c4-5). */
+    fun albumItems(): List<GalleryItem> = photos.query().filter { !it.raw }.sortedByDescending { it.name }
+
+    /** The thumbnail or the 「相册」 tab: straight to the newest photo (design B31: no stop on a confirm card). */
+    fun albumOpen(why: String) {
+        set(s.copy(page = Pages.GALLERY, albumIndex = 0, albumDeleteAsk = false, quitAsked = false, hoverId = null, moreOpen = false, countdown = null), "album open ($why)")
+    }
+
+    fun albumSelect(i: Int, count: Int) = set(s.copy(albumIndex = i.coerceIn(0, (count - 1).coerceAtLeast(0)), albumDeleteAsk = false), "album $i")
+
+    fun albumStep(by: Int, count: Int) = albumSelect(AlbumNav.step(s.albumIndex, by, count), count)
+
+    fun albumDeleteAsk(on: Boolean) = set(s.copy(albumDeleteAsk = on), "album delete ask $on")
+
+    /** S13 「删掉」: the photo and its original go; the next one shows (none left: S12e). */
+    fun albumDeleteConfirm() {
+        val i = s.albumIndex
         scope.launch {
+            val all = withContext(Dispatchers.IO) { photos.query() }
+            val shots = all.filter { !it.raw }.sortedByDescending { it.name }
+            val item = shots.getOrNull(i) ?: return@launch set(s.copy(albumDeleteAsk = false), "album delete: nothing at $i")
             withContext(Dispatchers.IO) {
-                c.uri?.let { photos.delete(it) }
-                c.rawUri?.let { photos.delete(it) }
+                photos.delete(item.uri)
+                val stamp = item.name.removeSuffix(".jpg").substringBeforeLast('_')
+                all.firstOrNull { it.raw && it.name == "${stamp}_raw.jpg" }?.let { photos.delete(it.uri) }
             }
             play(SoundBank.Cue.DELETE)
-            set(s.copy(card = null, galleryTick = s.galleryTick + 1, page = if (c.fromGallery) Pages.GALLERY else s.page), "deleted ${c.uri}")
+            val next = AlbumNav.afterDelete(i, shots.size)
+            val thumb = if (s.thumb?.uri == item.uri) shots.filter { it.uri != item.uri }.firstOrNull()?.let { ShotThumb(s.thumb!!.serial, it.uri) } else s.thumb
+            if (thumb == null || thumb.uri == null) _shotPicture.value = null
+            set(s.copy(albumIndex = next, albumDeleteAsk = false, galleryTick = s.galleryTick + 1, thumb = thumb), "album deleted ${item.name}")
         }
     }
 
-    /** 「换个滤镜重出」 (design S06 / M13): the original becomes the source (camera shots: the raw frame). */
-    fun cardRedo() {
-        val c = s.card ?: return
-        val from = c.rawUri ?: c.uri
-        set(s.copy(card = null), "redo")
-        when {
-            c.rawUri == null && !c.fromGallery && lastSourceWasSample -> set(s.copy(source = Source.SAMPLE, page = Pages.SHOOT), "redo from sample")
-            from != null -> importFrom(Uri.parse(from), null)
-        }
-    }
-
-    private val lastSourceWasSample: Boolean
-        get() = s.source == Source.SAMPLE
-
-    // ---- gallery (P8)
-
-    fun galleryOpen(uri: String, raw: Boolean) = set(s.copy(card = ShotCard(CardKind.ITEM, uri = uri, filterId = if (raw) "raw" else s.filterId, fromGallery = true, serial = ++cardSerial)), "gallery item")
-
-    fun galleryUse(uri: String) {
-        set(s.copy(card = null), "gallery use")
-        importFrom(Uri.parse(uri), null)
-    }
+    /** 「当素材拍」: this photo becomes the 「我的照片」 source on the camera page. */
+    fun albumUse(uri: String) = importFrom(Uri.parse(uri), null)
 
     // ---- LUTs (T9)
 
@@ -840,7 +742,7 @@ object FcStore {
     private fun importLutDone(name: String) {
         val luts = renderer.importedLuts()
         renderer.buildThumbs(listOf(Filters.lutFilter(name)), null)
-        set(s.copy(luts = luts, notice = notice(NoticeKind.LUT_ADDED, name)), "lut added $name")
+        set(s.copy(luts = luts, moreOpen = false, notice = notice(NoticeKind.LUT_ADDED, name)), "lut added $name")
     }
 
     fun lutDelete(name: String) {
@@ -849,61 +751,23 @@ object FcStore {
         set(s.copy(luts = renderer.importedLuts(), filterId = if (s.filterId == id) Filters.F01.id else s.filterId), "lut deleted $name")
     }
 
-    // ---- the tips card (P6, S00)
-
-    fun guideOk() {
-        prefs?.setGuideSeen(true)
-        set(s.copy(overlay = null), "guide ok")
-        // design entryFlow: after 「知道了」 the viewfinder opens by itself
-        autoLens("guide ok")
-    }
-
-    /** The main window is up: the viewfinder opens with the camera page (design round 3), once per start, not over the guide. */
-    fun windowReady() {
-        if (autoLensDone) return
-        autoLensDone = true
-        if (s.overlay == null) autoLens("start")
-    }
-
-    private var autoLensDone = false
-
-    private fun autoLens(why: String) {
-        main.postDelayed({
-            if (s.page != Pages.SHOOT || s.overlay != null || s.room != null || s.lens.open || s.lensError != null) return@postDelayed
-            // design entryFlow: on the headset the viewfinder opens on the camera (asking for the missing permissions first), on
-            // the emulator on the sample. Refused for good: still the camera, so the card names what is off (D58); no dialog.
-            if (!s.isEmulator && s.source == Source.SAMPLE) sourceSelected(Source.CAMERA, auto = true) else openLens("auto ($why)")
-        }, AUTO_LENS_MS)
-    }
-
-    /** Set while the main window is swapped for a new one (「叫回面前」): its ON_STOP / ON_DESTROY are not the user leaving. */
+    /** Set while the camera window is swapped for a new one (「叫回面前」): its ON_STOP / ON_DESTROY are not the user leaving. */
     @Volatile var recalling = false
 
     /**
-     * 「叫回面前」 in settings (D44, Full Space room mode makes this a Full Space app): the viewfinder closes (it hangs off the
-     * old window), a new main window opens where the system puts new windows (in front of the head), the old one closes,
-     * and the viewfinder comes back if it was open. No level gate here: the user is looking at this window when pressing
-     * it, and in Shared Space there are no Stage frames to step the gate (it would wait 15 s).
+     * 「叫回面前」 in settings (D44, Full Space room mode makes this a Full Space app): W2 folds away, a new camera window
+     * opens where the system puts new windows (in front of the head), the old one closes; W2 comes back beside the new one.
      */
     fun recallFront() {
         val host = windowHost ?: return
         if (s.room != null) return
-        val wasOpen = s.lens.open
         recalling = true
-        closeLens("recall", toSample = false)
+        host.closeSide()
         set(s.copy(quitAsked = false, page = Pages.SETTINGS), "recall front")
         main.postDelayed({
             host.recallFront()
-            main.postDelayed({
-                recalling = false
-                if (wasOpen) openLens("recall")
-            }, RECALL_LENS_MS)
+            main.postDelayed({ recalling = false }, RECALL_SETTLE_MS)
         }, RECALL_CLOSE_MS)
-    }
-
-    fun guideAgain() {
-        prefs?.setGuideSeen(false)
-        set(s.copy(overlay = Overlay.GUIDE, page = Pages.SHOOT), "guide again")
     }
 
     // =========================================================================================
@@ -915,18 +779,9 @@ object FcStore {
         val d = def()
         val target = if (d.roomMode == RoomMode.NONE || !d.available) Filters.ROOM_FALLBACK else d.id
         val switched = if (target != d.id) d.id else null
-        if (s.lens.open) {
-            set(s.copy(lens = s.lens.copy(closing = true)), "lens closing for room (S14)")
-            val go: () -> Unit = {
-                closeLens("room", toSample = true)
-                enterRoom(target, switched)
-            }
-            main.postDelayed({ if (held == "closing") heldRelease.add(go) else go() }, CLOSING_MS)
-        } else enterRoom(target, switched)
-    }
-
-    private fun enterRoom(target: String, switched: String?) {
-        set(s.copy(room = RoomUi(target, switched), card = null, overlay = null, filterId = target, stampOn = Filters.of(target)?.stampByDefault ?: s.stampOn, hoverId = null, compare = false), "room enter $target")
+        // the session closes and W2 folds by their rules (LensPolicy / SideWindow: in room)
+        set(s.copy(room = RoomUi(target, switched), moreOpen = false, filterId = target, stampOn = Filters.of(target)?.stampByDefault ?: s.stampOn, hoverId = null, compare = false, countdown = null), "room enter $target")
+        windowHost?.closeSide()
         windowHost?.openStage()
     }
 
@@ -939,7 +794,7 @@ object FcStore {
 
     fun roomRecenter() = s.room?.let { set(s.copy(room = it.copy(recenter = it.recenter + 1)), "room recenter") }
 
-    /** 「回取景台」: the main window comes back first (level head), then the Stage closes (design T14). */
+    /** 「回去拍照」: the camera window comes back first (level head), then the Stage closes (design T14). */
     fun roomBack(why: String = "button") {
         if (s.room == null) return
         FcLog.i("ROOM back ($why)")
@@ -947,10 +802,11 @@ object FcStore {
         if (closer != null) closer() else stageClosed()
     }
 
-    /** The Stage is gone (closed by the app, the system or the user). */
+    /** The Stage is gone (closed by the app, the system or the user): back to the camera page (S16). */
     fun stageClosed() {
         if (s.room == null) return
-        set(s.copy(room = null, notice = notice(NoticeKind.RESUME)), "room exit (S16)")
+        if (s.source == Source.CAMERA) announceBack = true
+        set(s.copy(room = null, page = Pages.SHOOT), "room exit (S16)")
     }
 
     fun stageResult(ok: Boolean, why: String) {
@@ -958,7 +814,7 @@ object FcStore {
         if (!ok) set(s.copy(room = null), "stage refused")
     }
 
-    // ---- the main window comes back only while the head is level (profile D9, Low Vision v0.1.5)
+    // ---- the camera window comes back only while the head is level (profile D9, Low Vision v0.1.5)
 
     private val windowGate = LevelGate()
     private var windowOpen: (() -> Unit)? = null
@@ -988,9 +844,6 @@ object FcStore {
         windowGate.step(now, pitchDeg)?.let { fireWindowOpen(it) }
     }
 
-    val levelHint: Int
-        get() = 0
-
     fun levelHintFor(pitchDeg: Float?): Int = windowGate.hint(pitchDeg)
 
     private fun fireWindowOpen(why: String) {
@@ -1019,32 +872,18 @@ object FcStore {
     // lifecycle (S24) and quitting (S17 / S18)
     // =========================================================================================
 
-    /** The main window went to the background (HOME, another app): the session goes (design S24). */
-    fun appStopped() {
-        // our own CAMERA dialog backgrounds the window on the headset: that is not the user leaving (QA #3 q3-1)
-        if (askingCamera) FcLog.i("WINDOW stopped by the CAMERA dialog: viewfinder kept")
-        if (CameraFlow.closeOnStop(s.lens.open, askingCamera)) closeLens("background", toSample = true, kind = NoticeKind.RESUME)
-        if (s.countdown != null && !askingCamera) set(s.copy(countdown = null), "countdown stopped (background)")
+    /** The camera window is started / resumed: the session comes back by itself (S24), permissions are re-checked. */
+    fun windowInFront(why: String) {
+        windowInFront = true
+        permissionRecheck(why)
+        syncLens(why)
     }
 
-    /** The main window is in front again: a viewfinder the CAMERA answer left pending opens now (QA #3 q3-1). */
-    fun windowResumed() {
-        val open = CameraFlow.onResume(reopenPending, s.lens.open, s.page == Pages.SHOOT, s.room != null)
-        reopenPending = false
-        if (open) openLens("resume after the CAMERA answer")
-    }
-
-    /** The CAMERA dialog is up (from [askCamera] or the shutter's S07 card). */
-    @Volatile private var askingCamera = false
-    private var reopenPending = false
-
-    private fun reopenAfterAnswer() {
-        val resumed = homeLife.value == androidx.lifecycle.Lifecycle.Event.ON_RESUME.name
-        when (CameraFlow.afterAnswer(s.lens.open, resumed, s.page == Pages.SHOOT, s.room != null)) {
-            CameraFlow.Reopen.NOW -> openLens("CAMERA answered")
-            CameraFlow.Reopen.ON_RESUME -> reopenPending = true.also { FcLog.i("LENS reopens when the window is back") }
-            CameraFlow.Reopen.NONE -> Unit
-        }
+    /** The camera window went to the background (HOME, another app, the system's permission dialog): the session goes. */
+    fun windowStopped() {
+        windowInFront = false
+        if (s.countdown != null) set(s.copy(countdown = null), "countdown stopped (background)")
+        syncLens("background")
     }
 
     fun quitClicked() = set(s.copy(quitAsked = true), "quit asked")
@@ -1053,8 +892,8 @@ object FcStore {
 
     fun quitConfirmed() {
         FcLog.i("QUIT confirmed")
-        lensHost?.close()
-        windowHost?.closeSpot()
+        stopLens()
+        windowHost?.closeSide()
         stageCloser?.invoke()
         val ctx = appContext
         val tasks = ctx?.getSystemService(android.app.ActivityManager::class.java)?.appTasks.orEmpty()
@@ -1089,7 +928,14 @@ object FcStore {
     fun seed(n: Int?) {
         fixedSeed = n
         if (n != null) liveSeed = n
-        refreshPreview()
+        refreshLook()
+    }
+
+    /** Debug `readback --es mode …`: changes the fake camera, then the session rule runs again. */
+    fun fakeReadbackMode(mode: String?) {
+        fakeReadback = mode
+        stopLens()
+        set(s.copy(lens = LensUi()), "debug readback $mode")
     }
 
     /** Debug `state`: jump the store to a design state through the same functions as taps. */
@@ -1097,22 +943,21 @@ object FcStore {
 
     fun dump(): String {
         val st = s
+        val lens = lensHost as? LensController
         return "DUMP state=${st.stateId} page=${st.page} source=${st.source.id} sample=${st.sample} import=${st.importName} filter=${st.filterId} hover=${st.hoverId} strength=${st.strength} " +
-            "stamp=${st.stampOn}/${st.stampFormat.id} compare=${st.compare} timer=${st.timerOn} lens=${st.lens} lensError=${st.lensError} card=${st.card?.kind}/${st.card?.uri} " +
-            "room=${st.room} muted=${st.muted} vol=${st.volume} lang=${st.lang} luts=${st.luts} permission=missing${st.missingPerms.map { it.name }}/denied=${st.permissionDenied}/blocked${st.blockedPerms.map { it.name }} fake=$fakeReadback held=$held last=${st.lastShotUri}"
+            "stamp=${st.stampOn}/${st.stampFormat.id} compare=${st.compare} timer=${st.timerOn} lens=${st.lens} lensError=${st.lensError} readbackHz=${"%.1f".format(lens?.hz ?: 0f)} pipelined=${lens?.pipelined} " +
+            "viewfinderHz=${"%.1f".format(renderer.liveHz)} renderMs=${"%.0f".format(renderer.liveRenderMs)} side=${sideShown}/wanted=${st.sideWanted} more=${st.moreOpen} saving=${st.saving} thumb=${st.thumb} album=${st.albumIndex}/ask=${st.albumDeleteAsk} " +
+            "room=${st.room} muted=${st.muted} vol=${st.volume} lang=${st.lang} luts=${st.luts} permission=missing${st.missingPerms.map { it.name }}/denied=${st.permissionDenied}/blocked${st.blockedPerms.map { it.name }}/asking=${st.asking}/waiting=${st.permWaiting} " +
+            "front=$windowInFront fake=$fakeReadback held=$held"
     }
 
-    private const val FLASH_MS = 800L
-    private const val CLOSING_MS = 700L
-    private const val REOPEN_MS = 2_500L
+    private const val FLASH_MS = 120L
+    private const val FREEZE_MS = 300L
     private const val QUIT_EXIT_DELAY_MS = 600L
     private const val GATE_WATCHDOG_MS = 3_000L
     private const val GATE_NO_FRAMES_FIRST_MS = 15_000L
-    private const val AUTO_LENS_MS = 1_200L
     private const val RECALL_CLOSE_MS = 400L
-    private const val RECALL_LENS_MS = 1_500L
-
-    /** Design N16, unknown until the headset spike: assume the permission is checked at read-back time. */
-    private const val SESSION_LEVEL_PERMISSION = false
+    private const val RECALL_SETTLE_MS = 1_500L
     private const val REOPEN_GAP_MS = 600L
+    private const val FAKE_FRAME_MS = 50L
 }

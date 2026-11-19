@@ -41,6 +41,7 @@ class HeadTracker {
     /** Current head pose, or the last one that was valid, or null before the first sample. */
     fun pose(): HeadPose? {
         val p = provider ?: return last
+        // gate:allow head-pose room mode only: P5 placement once the head is still (D9 / D29) and the level gate before W1 comes back; never aiming, placing or picking
         val pose = runCatching { p.latestData.hmdPose }.getOrNull() ?: return last
         val position = pose.position
         val rotation = pose.rotation

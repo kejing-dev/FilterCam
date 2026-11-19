@@ -13,7 +13,7 @@ import io.embodit.filtercam.platform.LensController
 import io.embodit.filtercam.ui.room.ActiveRoom
 
 /**
- * Debug commands (design qaHooks). Every command goes through the same store functions as the buttons and logs
+ * Debug commands (design r4 qaHooks). Every command goes through the same store functions as the buttons and logs
  * `CMD ok …` / `CMD fail …`; a `state` jump logs `CMD reached <id>` once the store says it is there. List in AGENTS.md.
  */
 object DebugCommands {
@@ -45,9 +45,6 @@ object DebugCommands {
             "state" -> return jump(a["id"] ?: arg ?: return false)
             "page" -> FcStore.pageSelected(arg ?: return false)
             "filter" -> FcStore.filterChosen(a["id"] ?: arg ?: return false, "debug")
-            "step" -> FcStore.filterStep(if (arg == "prev") -1 else 1, "debug")
-            "more" -> FcStore.moreToggled(arg != "close" && arg != "off")
-            "recall" -> FcStore.recallFront()
             "hover" -> {
                 val id = a["id"] ?: arg ?: return false
                 if (id == "off") s().hoverId?.let { FcStore.hover(it, false) } else FcStore.hover(id, true)
@@ -71,35 +68,59 @@ object DebugCommands {
             "mute" -> FcStore.muteToggled(on(a, s().muted))
             "volume" -> FcStore.volumeChanged((a["n"] ?: arg)?.toFloatOrNull()?.toInt() ?: return false)
             "lang" -> FcStore.langSelected(if (arg == "en") Lang.EN else Lang.ZH)
-            "guide" -> if (arg == "reset") FcStore.guideAgain() else FcStore.guideOk()
             "shutter" -> FcStore.shutterPressed("debug")
-            "lensButton" -> FcStore.lensButton()
+            "thumb" -> FcStore.albumOpen("thumbnail (debug)")
+            "side" ->
+                when (arg) {
+                    "show" -> FcStore.sideToggled(true)
+                    "hide" -> FcStore.sideToggled(false)
+                    "more" -> FcStore.moreToggled(true)
+                    "less" -> FcStore.moreToggled(false)
+                    else -> return false
+                }
+            "album" -> {
+                val items = FcStore.albumItems()
+                when (arg) {
+                    "open" -> FcStore.albumOpen("debug")
+                    "next" -> FcStore.albumStep(1, items.size)
+                    "prev" -> FcStore.albumStep(-1, items.size)
+                    "delete" -> FcStore.albumDeleteAsk(true)
+                    "cancel" -> FcStore.albumDeleteAsk(false)
+                    "confirm" -> FcStore.albumDeleteConfirm()
+                    "use" -> FcStore.albumUse(items.getOrNull(s().albumIndex)?.uri ?: return false)
+                    "dump" -> {
+                        val i = s().albumIndex
+                        FcLog.i("ALBUM dump page=${s().page} index=$i shows=${items.getOrNull(i)?.name} newest=${items.firstOrNull()?.name} isNewest=${i == 0} count=${items.size}")
+                    }
+                    else -> return false
+                }
+            }
             "lens" ->
                 when {
                     a["fail"] == "lost" -> lens()?.simulateLost() ?: return false
                     a["fail"] != null -> {
                         lens()?.failNext = a["fail"]
-                        if (!s().lens.open) FcStore.openLens("debug fail ${a["fail"]}")
+                        if (s().lensError != null) FcStore.lensRetry()
                     }
-                    arg == "open" -> FcStore.openLens("debug")
-                    arg == "close" -> FcStore.closeLens("debug", toSample = true)
+                    a["pipe"] != null -> lens()?.pipelined = a["pipe"] != "off"
+                    arg == "retry" -> FcStore.lensRetry()
                     else -> return false
                 }
-            "readback" -> {
-                FcStore.fakeReadback = a["mode"]?.takeIf { it != "off" } ?: arg?.takeIf { it != "off" }
-                if (FcStore.fakeReadback != null) FcStore.debugSet(s().copy(missingPerms = CamPerm.ALL, permissionDenied = false), "debug readback ${FcStore.fakeReadback}")
-            }
-            "permission" -> FcStore.permissionAllow()
-            "notNow" -> FcStore.permissionNotNow()
-            // the camera permission card's buttons (D58), same calls as ShootPage.CameraPermission
+            "readback" -> FcStore.fakeReadbackMode(a["mode"]?.takeIf { it != "off" } ?: arg?.takeIf { it != "off" })
+            // the permission card's states without system dialogs (design qaHooks perm); real ones: pm grant / revoke / set-permission-flags
+            "perm" -> perm(a["step"] ?: arg ?: return false)
+            // the card's buttons, same calls as the taps
             "permCard" ->
                 when (arg) {
-                    "grant" -> FcStore.askCamera("preview button")
-                    "retry" -> FcStore.askCamera("ask again")
+                    "start", "grant", "retry" -> FcStore.startPermissions("debug")
                     "settings" -> FcStore.openPermissionSettings()
+                    "sample" -> FcStore.sourceSelected(Source.SAMPLE)
+                    "ok" -> FcStore.permReviewDone()
                     else -> return false
                 }
+            "permReview" -> FcStore.permReviewOpen()
             "save" -> FcStore.photos.failNext = a["fail"] ?: arg ?: "io"
+            "saveRetry" -> FcStore.saveRetry()
             "import" -> if (a["fail"] != null) {
                 FcStore.failNextImport = true
                 FcStore.pickPhoto()
@@ -111,32 +132,42 @@ object DebugCommands {
             "room" -> if (arg == "off") FcStore.roomBack("debug") else FcStore.roomTry()
             "roomFilter" -> FcStore.roomStep(if (arg == "prev") -1 else 1, "debug")
             "recenter" -> FcStore.roomRecenter()
-            "card" ->
-                when (arg) {
-                    "again" -> FcStore.cardAgain()
-                    "ok" -> FcStore.cardOk()
-                    "delete" -> FcStore.cardDeleteAsk(true)
-                    "deleteYes" -> FcStore.cardDeleteConfirm()
-                    "deleteNo" -> FcStore.cardDeleteAsk(false)
-                    "redo" -> FcStore.cardRedo()
-                    "retry" -> FcStore.cardRetry()
-                    else -> return false
-                }
-            "gallery" -> {
-                val i = (a["i"] ?: arg)?.toFloatOrNull()?.toInt() ?: 0
-                val items = FcStore.photos.query()
-                val it = items.getOrNull(i) ?: return false
-                FcStore.pageSelected(Pages.GALLERY)
-                FcStore.galleryOpen(it.uri, it.raw)
-            }
+            "recall" -> FcStore.recallFront()
             "quit" -> if (arg == "yes") FcStore.quitConfirmed() else FcStore.quitClicked()
-            "lensError" -> FcStore.lensErrorOk()
             else -> return false
         }
         return true
     }
 
-    /** Design states S00 – S28, each through the same calls as the user's taps; `CMD reached <id>` once there. */
+    /** `perm --es step intro|ask1|ask2|missing|blocked|wait|ok|real`. */
+    private fun perm(step: String): Boolean {
+        val all = CamPerm.ALL
+        val sd = setOf(CamPerm.SPATIAL_DATA)
+        fun go(missing: Set<CamPerm>, denied: Boolean = false, blocked: Set<CamPerm> = emptySet(), asking: CamPerm? = null, waiting: Boolean = false) {
+            FcStore.fakeMissing = missing
+            FcStore.debugSet(s().copy(page = Pages.SHOOT, source = Source.CAMERA, missingPerms = missing, permissionDenied = denied, blockedPerms = blocked, asking = asking, permWaiting = waiting, permReview = false, quitAsked = false), "debug perm $step")
+        }
+        when (step) {
+            "intro" -> go(all)
+            "ask1" -> go(all, asking = CamPerm.SPATIAL_DATA)
+            "ask2" -> go(setOf(CamPerm.CAMERA), asking = CamPerm.CAMERA)
+            "missing" -> go(sd, denied = true)
+            "blocked" -> go(sd, denied = true, blocked = sd)
+            "wait" -> go(sd, denied = true, blocked = sd, waiting = true)
+            "ok" -> {
+                FcStore.fakeMissing = emptySet()
+                FcStore.permissionRecheck("debug perm ok")
+            }
+            "real" -> {
+                FcStore.fakeMissing = null
+                FcStore.permissionRecheck("debug perm real")
+            }
+            else -> return false
+        }
+        return true
+    }
+
+    /** Design states, each through the same calls as the user's taps; `CMD reached <id>` once there. */
     private fun jump(id: String): Boolean {
         fun reached(want: String, tries: Int = 40) {
             main.postDelayed(object : Runnable {
@@ -150,40 +181,37 @@ object DebugCommands {
             }, 250)
         }
 
+        /** A clean camera page on the sample with real permissions (the card off). */
         fun base() {
             if (s().room != null) FcStore.roomBack("debug state")
-            if (s().card != null) FcStore.cardOk()
-            if (s().overlay != null) FcStore.debugSet(s().copy(overlay = null), "debug clear overlay")
             if (s().quitAsked) FcStore.quitCancelled()
-            if (s().lensError != null) FcStore.lensErrorOk()
-            FcStore.fakeReadback = null
-            FcStore.debugSet(s().copy(page = Pages.SHOOT, moreOpen = false, compare = false, hoverId = null, notice = null, timerOn = false, countdown = null), "debug base")
+            if (s().lensError != null) FcStore.lensRetry()
+            FcStore.fakeMissing = null
+            if (FcStore.fakeReadback != null) FcStore.fakeReadbackMode(null)
+            FcStore.debugSet(
+                s().copy(page = Pages.SHOOT, moreOpen = false, compare = false, hoverId = null, notice = null, timerOn = false, countdown = null, albumDeleteAsk = false, permReview = false, permWaiting = false, asking = null, sideWanted = true),
+                "debug base",
+            )
             if (s().source != Source.SAMPLE) FcStore.sourceSelected(Source.SAMPLE)
         }
 
         fun later(ms: Long, f: () -> Unit) = main.postDelayed(f, ms)
 
-        fun camShutter(mode: String) {
+        /** Emulator: the sample stands in for the camera frames (read-back FAKE), both permissions faked on. */
+        fun fakeCamera(mode: String = "ok") {
             base()
-            FcStore.fakeReadback = mode
-            FcStore.debugSet(s().copy(missingPerms = CamPerm.ALL, permissionDenied = false), "debug fake camera $mode")
+            FcStore.fakeMissing = emptySet()
+            FcStore.permissionRecheck("debug fake camera")
+            FcStore.fakeReadbackMode(mode)
             FcStore.sourceSelected(Source.CAMERA)
         }
         when (id) {
-            "S00" -> FcStore.guideAgain()
-            "S01" -> {
-                base()
-                if (s().lens.open) FcStore.closeLens("debug S01", toSample = true)
-            }
-            "S02" -> {
-                base()
-                FcStore.openLens("debug S02")
-            }
-            "S03", "S22" -> {
-                base()
-                FcStore.sourceSelected(Source.CAMERA)
-                return true.also { reached(if (s().isEmulator) "S22" else "S03") }
-            }
+            "S00" -> perm("intro")
+            "S00a" -> perm("ask1")
+            "S00b" -> perm("blocked")
+            "S00c" -> perm("wait")
+            "S01" -> fakeCamera()
+            "S01s" -> base()
             "S04" -> {
                 base()
                 FcStore.hover("F02", true)
@@ -196,70 +224,49 @@ object DebugCommands {
             }
             "S06" -> {
                 base()
+                FcStore.hold("flash")
                 FcStore.shutterPressed("debug S06")
-                reached("S06", 60)
-                return true
-            }
-            "S07" -> {
-                camShutter("ok")
-                FcStore.debugSet(s().copy(missingPerms = CamPerm.ALL), "debug no permission")
-                later(1500) { FcStore.shutterPressed("debug S07") }
-            }
-            "S07r" -> {
-                camShutter("sessionLevel")
-                FcStore.debugSet(s().copy(missingPerms = CamPerm.ALL), "debug no permission")
-                FcStore.hold("reopen")
-                later(1500) {
-                    FcStore.shutterPressed("debug S07r")
-                    later(500) { FcStore.permissionAllow() }
-                }
             }
             "S08" -> {
-                camShutter("ok")
-                FcStore.debugSet(s().copy(missingPerms = emptySet()), "debug permission")
+                base()
                 FcStore.hold("reading")
-                later(1500) { FcStore.shutterPressed("debug S08") }
-            }
-            "S08n" -> {
-                camShutter("denied")
-                later(1500) { FcStore.shutterPressed("debug S08n") }
+                FcStore.shutterPressed("debug S08")
             }
             "S08f" -> {
-                camShutter("fail")
-                FcStore.debugSet(s().copy(missingPerms = emptySet()), "debug permission")
-                later(1500) { FcStore.shutterPressed("debug S08f") }
+                fakeCamera("fail")
+                later(1_500) { FcStore.shutterPressed("debug S08f") }
+                return true.also { FcLog.i("CMD reached S08f (toast after 1.5 s)") }
             }
             "S09" -> {
                 base()
                 FcStore.importSampleForDebug("cat")
             }
-            "S10" -> {
+            "S10" -> base()
+            "S10h" -> {
                 base()
-                FcStore.pageSelected(Pages.FILTERS)
-            }
-            "S29" -> {
-                base()
-                FcStore.moreToggled(true)
+                FcStore.sideToggled(false)
+                return true.also { FcLog.i("CMD reached S10h") }
             }
             "S11" -> {
                 base()
-                FcStore.pageSelected(Pages.FILTERS)
                 val f = java.io.File(FcStore.renderer.lutDir.parentFile, "My Warm Afternoon Look.cube")
                 f.writeText(debugCube())
                 FcStore.lutFromFile(f.path)
-                reached("S10")
-                return true
+                return true.also { FcLog.i("CMD reached S11") }
             }
             "S12" -> {
                 base()
-                FcStore.pageSelected(Pages.GALLERY)
+                FcStore.albumOpen("debug S12")
+            }
+            "S12e" -> {
+                base()
+                FcStore.albumOpen("debug S12e")
+                return true.also { FcLog.i("CMD reached S12e (empty only if there are no photos)") }
             }
             "S13" -> {
                 base()
-                val first = FcStore.photos.query().firstOrNull() ?: return false
-                FcStore.pageSelected(Pages.GALLERY)
-                FcStore.galleryOpen(first.uri, first.raw)
-                FcStore.cardDeleteAsk(true)
+                FcStore.albumOpen("debug S13")
+                FcStore.albumDeleteAsk(true)
             }
             "S14" -> {
                 base()
@@ -290,10 +297,15 @@ object DebugCommands {
                 FcStore.compareToggled(true)
             }
             "S21" -> {
+                fakeCamera()
+                FcStore.lensFailed("debug S21")
+            }
+            "S22" -> {
                 base()
-                if (s().lens.open) FcStore.closeLens("debug S21", toSample = true)
-                lens()?.failNext = "init"
-                FcStore.openLens("debug S21")
+                FcStore.fakeMissing = emptySet()
+                FcStore.permissionRecheck("debug S22")
+                FcStore.sourceSelected(Source.CAMERA)
+                return true.also { reached(if (s().isEmulator) "S22" else "S01") }
             }
             "S23" -> {
                 base()
@@ -301,21 +313,22 @@ object DebugCommands {
                 return true.also { FcLog.i("CMD reached S23") }
             }
             "S24" -> {
-                base()
-                FcStore.openLens("debug S24")
-                later(5000) { FcStore.appStopped() }
-                return true.also { FcLog.i("CMD reached S24 (after 5 s)") }
+                fakeCamera()
+                later(3000) { FcStore.windowStopped() }
+                later(5000) { FcStore.windowInFront("debug S24") }
+                return true.also { FcLog.i("CMD reached S24 (background at 3 s, back at 5 s)") }
             }
             "S25" -> {
                 base()
-                FcStore.openLens("debug S25")
-                later(5000) { lens()?.simulateLost() }
-                return true.also { FcLog.i("CMD reached S25 (after 5 s)") }
+                FcStore.hold("lost")
+                FcStore.sourceSelected(Source.CAMERA)
+                later(2000) { if (lens()?.isOpen == true) lens()?.simulateLost() else FcStore.lensLost("debug S25") }
             }
             "S26" -> {
                 base()
                 FcStore.photos.failNext = "io"
                 FcStore.shutterPressed("debug S26")
+                return true.also { FcLog.i("CMD reached S26 (red dot + toast)") }
             }
             "S27" -> {
                 base()
@@ -327,6 +340,10 @@ object DebugCommands {
                 base()
                 FcStore.filterChosen("F10", "debug S28")
                 return true.also { FcLog.i("CMD reached S28") }
+            }
+            "S29" -> {
+                base()
+                FcStore.moreToggled(true)
             }
             else -> return false
         }

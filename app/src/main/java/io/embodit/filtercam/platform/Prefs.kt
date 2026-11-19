@@ -11,8 +11,8 @@ import java.util.Locale
 
 /**
  * Local settings (design persistence.local): last filter / strength / sample / stamp on and format / timer / language /
- * mute and volume / tips seen / read-back permission refused / save originals. Camera and imported sources are not
- * kept: the app always starts on a sample (design S01).
+ * mute and volume / first hint seen / permission refusals / save originals. The source and a folded filter window are not
+ * kept: a cold start goes to the camera, with the permission card first if one is missing (design r4 S00 / S01).
  */
 class Prefs(context: Context) {
     private val p: SharedPreferences = context.getSharedPreferences("filter_cam", Context.MODE_PRIVATE)
@@ -56,7 +56,8 @@ class Prefs(context: Context) {
             else -> if (Locale.getDefault().language == "zh") Lang.ZH else Lang.EN
         }
 
-    fun guideSeen() = p.getBoolean("guideSeen", false)
+    /** 「右边选滤镜，中间快门直接拍」 shows once, with the first picture (design S01). */
+    fun hintSeen() = p.getBoolean("hintSeen", false)
 
-    fun setGuideSeen(seen: Boolean) = p.edit().putBoolean("guideSeen", seen).apply()
+    fun setHintSeen(seen: Boolean) = p.edit().putBoolean("hintSeen", seen).apply()
 }

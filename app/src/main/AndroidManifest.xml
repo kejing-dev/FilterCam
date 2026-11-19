@@ -2,7 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Camera read-back on the shutter (design N16): asked when the camera source is picked (headset: right after the guide) or on the first camera shot. -->
+    <!-- The viewfinder reads camera frames back (design r4, Readback Mode): Spatial Data first, then Camera, asked one by one on the first screen (S00). -->
     <uses-permission android:name="android.permission.CAMERA" />
     <!-- SDK docs say read-back of camera input needs CAMERA only, but the 透写台 headset test found read-back needs CAMERA + SPATIAL_DATA (design container.permissions): ask for both -->
     <uses-permission android:name="com.picovr.permission.SPATIAL_DATA" />
@@ -33,8 +33,8 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- Default spatial container: the main window P1, a planar window in the Shared Space (design 760 x 680 dp, narrowed to 680 x 680 dp so the viewfinder fits the view, QA #1 q1-3;
-                 system glass). The room Stage, the lens spot is declared in Main.kt. -->
+            <!-- Default spatial container: the camera window W1, a planar window in the Shared Space (design r4: 600 x 576 dp, system glass).
+                 The filter window W2 and the room Stage are declared in Main.kt. -->
             <meta-data
                 android:name="pico.spatial.windowcontainer.id"
                 android:value="HomeWindow" />
@@ -43,7 +43,7 @@
                 android:value="1" />
             <meta-data
                 android:name="pico.spatial.windowcontainer.defaultsize"
-                android:value="680x680" />
+                android:value="600x576" />
             <meta-data
                 android:name="pico.spatial.windowcontainer.defaultsize.unit"
                 android:value="dp" />
