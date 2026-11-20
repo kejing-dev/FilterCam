@@ -6,8 +6,12 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import com.pico.spatial.ui.platform.containers.openWindowContainer
+import io.embodit.filtercam.HOME_AGAIN_ID
 import io.embodit.filtercam.R
 import io.embodit.filtercam.domain.AlbumNav
+import io.embodit.filtercam.domain.BackAction
+import io.embodit.filtercam.domain.BackPolicy
 import io.embodit.filtercam.domain.CamPerm
 import io.embodit.filtercam.domain.CubeError
 import io.embodit.filtercam.domain.FilterDef
@@ -33,6 +37,7 @@ import io.embodit.filtercam.platform.Renderer
 import io.embodit.filtercam.platform.SoundBank
 import java.util.Calendar
 import java.util.Date
+import io.embodit.filtercam.ui.side.SideState
 import kotlin.random.Random
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -895,6 +900,7 @@ object FcStore {
 
     fun quitConfirmed() {
         FcLog.i("QUIT confirmed")
+        quitting = true
         stopLens()
         stageCloser?.invoke()
         recalling = true // the windows' ON_STOP / ON_DESTROY below are the quit, not the user leaving
@@ -909,6 +915,39 @@ object FcStore {
             android.os.Process.killProcess(android.os.Process.myPid())
             kotlin.system.exitProcess(0)
         }, QUIT_EXIT_DELAY_MS)
+    }
+
+    // =========================================================================================
+    // BACK / controller B (profile D60 补, QA #6 q6-1): never quits, never sends the app to the background
+    // =========================================================================================
+
+    @Volatile private var quitting = false
+    private var homeReopenAt = 0L
+
+    /**
+     * The one BACK handler ([io.embodit.filtercam.platform.BackKeys] routes every layer of every window here, once per
+     * press). What it does is [BackPolicy]: W1 closed = open it again; W2 open = fold it, back to the viewfinder;
+     * room mode = stay; otherwise eaten. Every press logs `BACK <where> -> <action>` for QA.
+     */
+    fun onBack(where: String) {
+        val action = BackPolicy.decide(quitting = quitting || recalling, inRoom = s.room != null, sideOpen = SideState.open, homeOpen = windowHost != null)
+        FcLog.i("BACK $where -> $action")
+        when (action) {
+            BackAction.CLOSE_SIDE -> sideToggled(false)
+            BackAction.REOPEN_HOME -> reopenHome(where)
+            BackAction.IGNORE, BackAction.STAY_IN_ROOM, BackAction.EAT -> Unit
+        }
+    }
+
+    private fun reopenHome(why: String) {
+        val app = appContext ?: return
+        val n = now()
+        if (n - homeReopenAt < HOME_REOPEN_GUARD_MS) return // one window per burst of presses
+        homeReopenAt = n
+        set(s.copy(page = Pages.SHOOT, quitAsked = false), "back: camera window again ($why)")
+        val tag = "home${n % 1_000_000}"
+        val r = runCatching { app.openWindowContainer(HOME_AGAIN_ID, tag) }
+        FcLog.i("BACK reopen $HOME_AGAIN_ID/$tag ${r.exceptionOrNull() ?: "ok"}")
     }
 
     // =========================================================================================
@@ -963,6 +1002,7 @@ object FcStore {
     private const val GATE_WATCHDOG_MS = 3_000L
     private const val GATE_NO_FRAMES_FIRST_MS = 15_000L
     private const val RECALL_CLOSE_MS = 400L
+    private const val HOME_REOPEN_GUARD_MS = 1_500L
     private const val RECALL_SETTLE_MS = 1_500L
     private const val REOPEN_GAP_MS = 600L
     private const val FAKE_FRAME_MS = 50L

@@ -46,6 +46,7 @@ import io.embodit.filtercam.app.FcStore
 import io.embodit.filtercam.app.Lang
 import io.embodit.filtercam.app.Pages
 import io.embodit.filtercam.domain.StampFormat
+import io.embodit.filtercam.platform.BackKeys
 import io.embodit.filtercam.platform.FcLog
 import io.embodit.filtercam.ui.room.ROOM_STAGE_ID
 import io.embodit.filtercam.ui.side.SIDE_WINDOW_ID
@@ -171,6 +172,7 @@ private fun WindowBridge(windowId: String, windowTag: String?) {
                         }
                     else -> Unit
                 }
+                if (event == Lifecycle.Event.ON_RESUME) for (ms in longArrayOf(0, 500, 1500)) android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ BackKeys.sweep("window") }, ms)
                 FcStore.homeLife.value = event.name
                 FcLog.i("WINDOW $windowId/$windowTag ${event.name}")
             }

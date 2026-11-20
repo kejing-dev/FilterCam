@@ -58,7 +58,9 @@ import io.embodit.filtercam.app.NoticeKind
 import io.embodit.filtercam.app.Source
 import io.embodit.filtercam.domain.FilterDef
 import io.embodit.filtercam.domain.Filters
+import io.embodit.filtercam.platform.BackKeys
 import io.embodit.filtercam.platform.FcLog
+import io.embodit.filtercam.platform.backKeys
 import io.embodit.filtercam.ui.home.Badge
 import io.embodit.filtercam.ui.home.FilterText
 import io.embodit.filtercam.ui.home.Options
@@ -92,6 +94,7 @@ fun FilterSide() {
     DisposableEffect(Unit) {
         SideState.open = true
         FcLog.i("SIDE shown")
+        BackKeys.sweep("side")
         onDispose {
             SideState.open = false
             val byApp = SideState.closingByApp
@@ -101,7 +104,7 @@ fun FilterSide() {
         }
     }
     PicoTheme {
-        Column(Modifier.fillMaxSize().padding(24.dp)) {
+        Column(Modifier.fillMaxSize().backKeys("W2").padding(24.dp)) {
             if (state.moreOpen) MorePage(state, t) else FilterList(state, t)
         }
     }

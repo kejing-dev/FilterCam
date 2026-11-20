@@ -49,6 +49,7 @@ import io.embodit.filtercam.R
 import io.embodit.filtercam.app.FcState
 import io.embodit.filtercam.app.FcStore
 import io.embodit.filtercam.platform.FcLog
+import io.embodit.filtercam.platform.backKeys
 import io.embodit.filtercam.ui.home.FilterText
 import io.embodit.filtercam.ui.home.PillButton
 import io.embodit.filtercam.ui.theme.FcColors
@@ -143,7 +144,7 @@ fun RoomScreen() {
             },
         attachments = {
             AttachmentPanel(ROOM_PANEL) {
-                Box(Modifier.size(ROOM_PANEL_W.dp, ROOM_PANEL_H.dp)) { if (scene.panelShown[ROOM_PANEL] == true) RoomPanel(state) }
+                Box(Modifier.size(ROOM_PANEL_W.dp, ROOM_PANEL_H.dp).backKeys("P5")) { if (scene.panelShown[ROOM_PANEL] == true) RoomPanel(state) }
             }
         },
         update = { _, attachments ->

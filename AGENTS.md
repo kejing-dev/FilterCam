@@ -111,6 +111,17 @@ Stop the Gradle daemons (`./gradlew.bat --stop`) before starting an emulator on 
 - Emulator screenshots: `pico-cli capture screenshot` sometimes returns a frame with the lower half black; retry, and if it
   stays, restart that emulator (`adb -s <serial> emu kill`, `pico-cli emulator start --avd <its avd>`).
 
+## v0.2.1 notes (QA #6 q6-1, profile D60 补): BACK / controller B
+
+- BACK and controller B never quit and never send the app to the background. They are caught at the earliest layer of
+  every window (`platform/BackKeys.kt`, copied from GlowBench / SunmaoJoints): each stub Activity's Window.Callback, an
+  unhandled-key listener on every root view of the process (swept on Activity events, tab taps, W2 open), and
+  `Modifier.backKeys()` on the Compose roots of W1, W2 and P5; the OnBackPressedCallback is the last fallback.
+- One handler, `FcStore.onBack` → `domain/BackPolicy`: W1 closed = open it again; W2 open = fold it, back to the
+  viewfinder (拍照); room mode = stay (P5 「回取景台」 is the way out); otherwise eaten. Every press logs
+  `BACK <layer> <key> -> <action>` under tag `FilterCam`.
+- QA: `adb -s <dev> shell input keyevent BACK` / `BUTTON_B`, also after tapping a TabBar item.
+
 ## Debug broadcast (QA)
 
 `adb -s <dev> shell am broadcast -a io.embodit.filtercam.DEBUG -p io.embodit.filtercam --es cmd <name> [--es s <arg>] [extras]`

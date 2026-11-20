@@ -34,7 +34,10 @@ import com.pico.spatial.ui.foundation.geometry.NormalizedPoint3D
 import com.pico.spatial.ui.foundation.window.Augment
 import com.pico.spatial.ui.foundation.window.AugmentContentAlignment
 import com.pico.spatial.ui.platform.ViewPoint
+import io.embodit.filtercam.platform.BackKeys
 import io.embodit.filtercam.platform.FcLog
+import io.embodit.filtercam.platform.backKeys
+import androidx.compose.ui.focus.focusProperties
 
 /*
  * 主窗口模板（taste D8「合成一个窗口模板」+ D21 拖动交给系统 + D26 设置里退出应用），
@@ -104,7 +107,7 @@ fun MainWindow(
     val page = if (current == SETTINGS_PAGE) null else pages.firstOrNull { it.id == current } ?: pages.first()
 
     PicoTheme {
-        Box(Modifier.fillMaxSize()) {
+        Box(Modifier.fillMaxSize().backKeys("W1")) {
             if (page != null) {
                 Column(Modifier.fillMaxSize().padding(24.dp)) {
                     if (page.showTitle) {
@@ -124,8 +127,11 @@ fun MainWindow(
             pages.filter { it.inTabBar }.forEach { p ->
                 item(
                     selected = lit?.id == p.id,
+                    // D60 补: the TabBar is its own dialog window; a tapped item keeps the focus and takes BACK first
+                    modifier = TabKeys,
                     onClick = {
                         FcLog.i("WINDOW tab ${p.id}")
+                        BackKeys.sweep("tab")
                         onSelect(p.id)
                     },
                     mainContent = { Icon(painter = painterResource(p.icon), contentDescription = p.label) },
@@ -134,8 +140,10 @@ fun MainWindow(
             }
             item(
                 selected = page == null,
+                modifier = TabKeys,
                 onClick = {
                     FcLog.i("WINDOW tab $SETTINGS_PAGE")
+                    BackKeys.sweep("tab")
                     onSelect(SETTINGS_PAGE)
                 },
                 mainContent = { Icon(painter = painterResource(settingsIcon), contentDescription = settingsLabel) },
@@ -191,3 +199,6 @@ fun SideAugment(width: Int = 360, content: @Composable () -> Unit) {
         PicoTheme { Box(Modifier.size(width.dp, 320.dp).padding(16.dp)) { content() } }
     }
 }
+
+/** TabBar items: not focusable, and BACK / controller B go to the one back handler (circuit-lab v0.1.3 fix, QA #6 q6-1). */
+private val TabKeys: Modifier = Modifier.focusProperties { canFocus = false }.backKeys("tab")
